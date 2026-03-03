@@ -1,0 +1,406 @@
+---
+title: Examples
+description: Real-world examples and patterns for ff-serv
+---
+
+## Basic HTTP Server
+
+```typescript
+import { createFetchHandler, basicHandler } from 'ff-serv'
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const fetch = yield* createFetchHandler([
+    basicHandler('/health', () => new Response('OK')),
+    basicHandler('/version', () => Response.json({ version: '1.0.0' })),
+  ])
+
+  Bun.serve({ port: 3000, fetch })
+  yield* Effect.log('Server running on http://localhost:3000')
+})
+
+Effect.runPromise(program)
+```
+
+## API with Services
+
+```typescript
+import { createFetchHandler, basicHandler, Logger } from 'ff-serv'
+import { Effect, Context } from 'effect'
+
+// Define services
+class Database extends Context.Tag('Database')<
+  Database,
+  { query: (sql: string) => Effect.Effect<unknown[]> }
+>() {}
+
+class Config extends Context.Tag('Config')<
+  Config,
+  { apiKey: string }
+>() {}
+
+const program = Effect.gen(function* () {
+  const db = yield* Database
+  const config = yield* Config
+
+  const fetch = yield* createFetchHandler([
+    basicHandler('/users', () =>
+      Effect.gen(function* () {
+        yield* Logger.info('Fetching users')
+        const users = yield* db.query('SELECT * FROM users')
+        return Response.json(users)
+      })
+    ),
+
+    basicHandler('/config', () =>
+      Response.json({ hasApiKey: !!config.apiKey })
+    ),
+  ])
+
+  Bun.serve({ port: 3000, fetch })
+})
+
+// Provide services
+Effect.runPromise(
+  program.pipe(
+    Effect.provideService(Database, {
+      query: (sql) => Effect.succeed([{ id: 1, name: 'Alice' }]),
+    }),
+    Effect.provideService(Config, { apiKey: 'secret' })
+  )
+)
+```
+
+## oRPC + HTTP Routes
+
+```typescript
+import { createFetchHandler, basicHandler } from 'ff-serv'
+import { oRPCHandler } from 'ff-serv/orpc'
+import { os } from '@orpc/server'
+import { RPCHandler } from '@orpc/server/fetch'
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  // oRPC router
+  const router = {
+    greet: os.handler((input: { name: string }) => `Hello, ${input.name}!`),
+    health: os.handler(() => ({ status: 'ok' })),
+  }
+
+  const fetch = yield* createFetchHandler([
+    // Regular HTTP endpoint
+    basicHandler('/version', () => Response.json({ version: '1.0.0' })),
+
+    // oRPC endpoints (handles /rpc/*)
+    oRPCHandler(new RPCHandler(router)),
+  ])
+
+  Bun.serve({ port: 3000, fetch })
+  yield* Effect.log('Server ready')
+})
+
+Effect.runPromise(program)
+```
+
+## Cached API Proxy
+
+```typescript
+import { createFetchHandler, basicHandler } from 'ff-serv'
+import { Cache, CacheAdapter } from 'ff-serv/cache'
+import { Effect, Duration } from 'effect'
+import { HttpClient, FetchHttpClient } from '@effect/platform'
+
+const program = Effect.gen(function* () {
+  const cache = yield* Cache.make({
+    ttl: Duration.seconds(30),
+    swr: Duration.seconds(60),
+    lookup: (url: string) =>
+      Effect.gen(function* () {
+        const client = yield* HttpClient.HttpClient
+        const response = yield* client.get(url)
+        return yield* response.text
+      }),
+    adapter: CacheAdapter.memory({ capacity: 100 }),
+  })
+
+  const fetch = yield* createFetchHandler([
+    basicHandler('/proxy', (request) =>
+      Effect.gen(function* () {
+        const url = new URL(request.url).searchParams.get('url')
+        if (!url) return new Response('Missing url param', { status: 400 })
+
+        const data = yield* cache.get(url)
+        return new Response(data)
+      })
+    ),
+  ])
+
+  Bun.serve({ port: 3000, fetch })
+})
+
+Effect.runPromise(
+  program.pipe(Effect.provide(FetchHttpClient.layer))
+)
+```
+
+## Redis-Backed Cache
+
+```typescript
+import { createFetchHandler, basicHandler, Logger } from 'ff-serv'
+import { Cache, CacheAdapter } from 'ff-serv/cache'
+import { ioredis } from 'ff-serv/cache/ioredis'
+import { Effect, Duration, Schema } from 'effect'
+import Redis from 'ioredis'
+
+const User = Schema.Struct({
+  id: Schema.Number,
+  name: Schema.String,
+  email: Schema.String,
+})
+
+type User = Schema.Schema.Type<typeof User>
+
+const program = Effect.gen(function* () {
+  const redis = new Redis()
+  const client = ioredis(redis)
+
+  const userCache = yield* Cache.make({
+    ttl: Duration.minutes(5),
+    swr: Duration.minutes(5),
+    lookup: (userId: number) =>
+      Effect.gen(function* () {
+        yield* Logger.info({ userId }, 'Fetching user from database')
+        // Simulate DB query
+        return {
+          id: userId,
+          name: `User ${userId}`,
+          email: `user${userId}@example.com`,
+        } satisfies User
+      }),
+    adapter: CacheAdapter.redis({
+      client,
+      keyPrefix: 'users',
+      schema: User,
+    }),
+  })
+
+  const fetch = yield* createFetchHandler([
+    basicHandler('/users/:id', (request) =>
+      Effect.gen(function* () {
+        const url = new URL(request.url)
+        const userId = Number(url.pathname.split('/').pop())
+
+        const user = yield* userCache.get(userId)
+        return Response.json(user)
+      })
+    ),
+
+    basicHandler('/users/:id/invalidate', (request) =>
+      Effect.gen(function* () {
+        const url = new URL(request.url)
+        const userId = Number(url.pathname.split('/')[2])
+
+        yield* userCache.invalidate(userId)
+        yield* Logger.info({ userId }, 'Cache invalidated')
+        return new Response('OK')
+      })
+    ),
+  ])
+
+  Bun.serve({ port: 3000, fetch })
+  yield* Logger.info('Server with Redis cache running')
+})
+
+Effect.runPromise(program)
+```
+
+## Multi-Service Application
+
+```typescript
+import { createFetchHandler, basicHandler, getPort, Logger } from 'ff-serv'
+import { Effect } from 'effect'
+
+const startApiServer = (port: number) =>
+  Effect.gen(function* () {
+    const fetch = yield* createFetchHandler([
+      basicHandler('/api/health', () => new Response('API OK')),
+    ])
+
+    Bun.serve({ port, fetch })
+    yield* Logger.info({ port }, 'API server started')
+  })
+
+const startAdminServer = (port: number) =>
+  Effect.gen(function* () {
+    const fetch = yield* createFetchHandler([
+      basicHandler('/admin/health', () => new Response('Admin OK')),
+    ])
+
+    Bun.serve({ port, fetch })
+    yield* Logger.info({ port }, 'Admin server started')
+  })
+
+const program = Effect.gen(function* () {
+  const apiPort = yield* getPort({ port: 3000 })
+  const adminPort = yield* getPort({ port: 3001 })
+
+  yield* Effect.all(
+    [
+      startApiServer(apiPort),
+      startAdminServer(adminPort),
+    ],
+    { concurrency: 'unbounded' }
+  )
+})
+
+Effect.runPromise(program)
+```
+
+## Custom Error Handling
+
+```typescript
+import { createFetchHandler, basicHandler, Logger } from 'ff-serv'
+import { Effect, Data } from 'effect'
+
+class NotFoundError extends Data.TaggedError('NotFoundError')<{
+  resource: string
+}> {}
+
+class UnauthorizedError extends Data.TaggedError('UnauthorizedError') {}
+
+const program = Effect.gen(function* () {
+  const fetch = yield* createFetchHandler(
+    [
+      basicHandler('/protected', (request) =>
+        Effect.gen(function* () {
+          const auth = request.headers.get('Authorization')
+          if (!auth) return yield* new UnauthorizedError()
+
+          return new Response('Secret data')
+        })
+      ),
+
+      basicHandler('/users/:id', (request) =>
+        Effect.gen(function* () {
+          const url = new URL(request.url)
+          const userId = url.pathname.split('/').pop()
+
+          if (userId === '999') {
+            return yield* new NotFoundError({ resource: 'user' })
+          }
+
+          return Response.json({ id: userId, name: 'User' })
+        })
+      ),
+    ],
+    {
+      onError: ({ error }) =>
+        Effect.gen(function* () {
+          // Log to external service
+          yield* Logger.error({ error }, 'Request failed')
+          // Could send to Sentry, etc.
+        }),
+    }
+  )
+
+  Bun.serve({ port: 3000, fetch })
+})
+
+Effect.runPromise(program)
+```
+
+## Testing
+
+```typescript
+import { createFetchHandler, basicHandler } from 'ff-serv'
+import { describe, it, expect, layer } from '@effect/vitest'
+import { Effect } from 'effect'
+import { HttpClient, FetchHttpClient } from '@effect/platform'
+
+function makeTestServer(port: number) {
+  return Effect.gen(function* () {
+    const fetch = yield* createFetchHandler([
+      basicHandler('/health', () => new Response('OK')),
+      basicHandler('/users', () => 
+        Response.json([{ id: 1, name: 'Alice' }])
+      ),
+    ])
+
+    const server = Bun.serve({ port, fetch })
+    return server
+  })
+}
+
+layer(FetchHttpClient.layer)((it) => {
+  it.effect('health check', () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestServer(3001)
+      const client = yield* HttpClient.HttpClient
+
+      const response = yield* client.get('http://localhost:3001/health')
+      const text = yield* response.text
+
+      expect(text).toBe('OK')
+      server.stop()
+    })
+  )
+
+  it.effect('returns users', () =>
+    Effect.gen(function* () {
+      const server = yield* makeTestServer(3002)
+      const client = yield* HttpClient.HttpClient
+
+      const response = yield* client.get('http://localhost:3002/users')
+      const users = yield* response.json
+
+      expect(users).toEqual([{ id: 1, name: 'Alice' }])
+      server.stop()
+    })
+  )
+})
+```
+
+## Path Matching Patterns
+
+```typescript
+import { createFetchHandler, basicHandler } from 'ff-serv'
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const fetch = yield* createFetchHandler([
+    // Exact path
+    basicHandler('/api/users', () => new Response('Users list')),
+
+    // Function matcher - prefix
+    basicHandler(
+      (url) => url.pathname.startsWith('/api/v1/'),
+      () => new Response('API v1')
+    ),
+
+    // Function matcher - regex
+    basicHandler(
+      (url) => /^\/posts\/\d+$/.test(url.pathname),
+      (request) => {
+        const id = new URL(request.url).pathname.split('/').pop()
+        return Response.json({ id, title: 'Post' })
+      }
+    ),
+
+    // Function matcher - query params
+    basicHandler(
+      (url) => url.searchParams.has('debug'),
+      () => Response.json({ debug: true })
+    ),
+
+    // Catch-all
+    basicHandler(
+      () => true,
+      () => new Response('Not Found', { status: 404 })
+    ),
+  ])
+
+  Bun.serve({ port: 3000, fetch })
+})
+
+Effect.runPromise(program)
+```

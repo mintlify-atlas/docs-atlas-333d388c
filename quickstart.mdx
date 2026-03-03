@@ -1,80 +1,411 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get started with FF in 5 minutes
 ---
 
-## Get started in three steps
+## Overview
 
-Get your documentation site running locally and make your first customization.
+This quickstart will guide you through building a simple AI-powered application using FF. You'll create an Effect.ts program that:
 
-### Step 1: Set up your local environment
+1. Uses the AI SDK wrapper to generate text with typed callbacks
+2. Implements a tool with Effect.ts patterns
+3. Logs structured output with Effect's logging
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+By the end, you'll understand how FF brings type safety and composability to AI development.
 
-### Step 2: Deploy your changes
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+Before starting, ensure you have:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+- Node.js 18+ or Bun 1.0+ installed
+- An OpenAI API key (or another AI SDK-compatible provider)
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  This guide uses OpenAI, but FF works with any AI SDK provider (Anthropic, Google, etc.)
 </Note>
+
+## Step 1: Install Dependencies
+
+<Steps>
+  <Step title="Create a new project">
+    
+    ```bash
+    mkdir ff-quickstart
+    cd ff-quickstart
+    npm init -y
+    ```
+    
+  </Step>
+  
+  <Step title="Install FF and dependencies">
+    
+    <CodeGroup>
+    
+    ```bash npm
+    npm install ff-effect effect ai @ai-sdk/openai
+    ```
+    
+    ```bash yarn
+    yarn add ff-effect effect ai @ai-sdk/openai
+    ```
+    
+    ```bash pnpm
+    pnpm add ff-effect effect ai @ai-sdk/openai
+    ```
+    
+    ```bash bun
+    bun add ff-effect effect ai @ai-sdk/openai
+    ```
+    
+    </CodeGroup>
+    
+  </Step>
+  
+  <Step title="Set up TypeScript">
+    
+    ```bash
+    npm install -D typescript tsx
+    npx tsc --init
+    ```
+    
+    Update your `tsconfig.json`:
+    
+    ```json
+    {
+      "compilerOptions": {
+        "target": "ES2022",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true
+      }
+    }
+    ```
+    
+  </Step>
+</Steps>
+
+## Step 2: Create Your First Effect Program
+
+Create a file called `index.ts`:
+
+```typescript index.ts
+import { Effect } from 'effect';
+import { generateText, tool } from 'ff-effect/for/ai';
+import { runPromiseUnwrapped } from 'ff-effect';
+import { openai } from '@ai-sdk/openai';
+
+// Define a weather tool with Effect.ts
+const getWeather = yield* tool({
+  description: 'Get the current weather in a given city',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      city: { type: 'string', description: 'The city name' },
+    },
+    required: ['city'],
+  },
+  execute: (input) =>
+    Effect.gen(function* () {
+      // In a real app, this would call a weather API
+      yield* Effect.log(`Fetching weather for ${input.city}`);
+      return `The weather in ${input.city} is sunny and 72°F`;
+    }),
+});
+
+// Main program
+const program = Effect.gen(function* () {
+  yield* Effect.log('Starting AI conversation...');
+
+  const result = yield* generateText({
+    model: openai('gpt-4-turbo'),
+    prompt: 'What is the weather like in San Francisco?',
+    tools: { getWeather },
+    maxSteps: 5,
+    
+    // Typed callback that returns an Effect
+    onStepFinish: (step) =>
+      Effect.gen(function* () {
+        yield* Effect.log(
+          `Step ${step.stepType} completed. ` +
+          `Tool calls: ${step.toolCalls?.length ?? 0}`
+        );
+      }),
+  });
+
+  yield* Effect.log(`Final response: ${result.text}`);
+  
+  return result;
+});
+
+// Run the program
+await runPromiseUnwrapped(program);
+```
+
+## Step 3: Add Environment Variables
+
+Create a `.env` file:
+
+```bash .env
+OPENAI_API_KEY=your-api-key-here
+```
+
+Update `index.ts` to load environment variables:
+
+```typescript
+import 'dotenv/config'; // Add at the top
+```
+
+Install dotenv:
+
+<CodeGroup>
+
+```bash npm
+npm install dotenv
+```
+
+```bash yarn
+yarn add dotenv
+```
+
+```bash pnpm
+pnpm add dotenv
+```
+
+```bash bun
+bun add dotenv
+```
+
+</CodeGroup>
+
+## Step 4: Run Your Application
+
+<CodeGroup>
+
+```bash node
+npx tsx index.ts
+```
+
+```bash bun
+bun index.ts
+```
+
+</CodeGroup>
+
+You should see output like:
+
+```
+timestamp=... level=INFO message="Starting AI conversation..."
+timestamp=... level=INFO message="Fetching weather for San Francisco"
+timestamp=... level=INFO message="Step tool-result completed. Tool calls: 1"
+timestamp=... level=INFO message="Final response: The weather in San Francisco is sunny and 72°F"
+```
+
+## Understanding the Code
+
+Let's break down what makes this FF code special:
+
+### Effect.ts Integration
+
+```typescript
+const program = Effect.gen(function* () {
+  yield* Effect.log('Starting...');
+  const result = yield* generateText({ ... });
+  return result;
+});
+```
+
+FF wraps AI SDK functions as Effects, allowing you to compose them with other Effect operations like logging, error handling, and service access.
+
+### Typed Callbacks
+
+```typescript
+onStepFinish: (step) =>
+  Effect.gen(function* () {
+    yield* Effect.log(`Step completed`);
+  }),
+```
+
+Unlike AI SDK's Promise-based callbacks, FF callbacks return Effects. This gives you:
+
+- Access to Effect services and context
+- Structured error handling
+- Type-safe composition with other Effects
+- Automatic fiber management
+
+### Tool Definition
+
+```typescript
+const getWeather = yield* tool({
+  description: 'Get weather',
+  inputSchema: { ... },
+  execute: (input) =>
+    Effect.gen(function* () {
+      yield* Effect.log(`Fetching weather for ${input.city}`);
+      return `Weather data...`;
+    }),
+});
+```
+
+Tools execute as Effects, enabling:
+
+- Database queries with Effect services
+- Error handling with typed errors
+- Logging and telemetry
+- Access to your application context
+
+## Next Steps
+
+### Add Database Operations
+
+Combine FF's AI wrappers with Drizzle ORM:
+
+```typescript
+import { createDrizzle } from 'ff-effect/for/drizzle';
+
+const { db, withTransaction } = createDrizzle(createClient);
+
+const saveTool = yield* tool({
+  description: 'Save data to database',
+  inputSchema: { ... },
+  execute: (input) =>
+    Effect.gen(function* () {
+      // Access database within tool execution
+      yield* db((client) => client.insert(table).values(input));
+      return 'Saved successfully';
+    }),
+});
+```
+
+See the [ff-effect Drizzle guide](/packages/ff-effect/drizzle) for details.
+
+### Manage Conversations
+
+Add persistent conversation history with ff-ai:
+
+```typescript
+import { createTurnHandler } from 'ff-ai';
+import { DrizzleConversationStore } from 'ff-ai/providers/drizzle';
+
+const handler = yield* createTurnHandler({
+  identifier: {
+    resourceId: 'user-123',
+    threadId: 'conversation-456',
+  },
+});
+
+// Get conversation history
+const history = yield* handler.getHistory({ windowSize: 10 });
+
+// Save messages automatically
+yield* handler.onStep(stepResult);
+```
+
+See the [ff-ai guide](/packages/ff-ai/overview) for conversation management.
+
+### Build HTTP Services
+
+Create HTTP endpoints that serve AI responses:
+
+```typescript
+import { basicHandler, createFetchHandler } from 'ff-serv';
+
+const aiHandler = basicHandler('/api/chat', (request) =>
+  Effect.gen(function* () {
+    const body = yield* Effect.promise(() => request.json());
+    
+    const result = yield* generateText({
+      model: openai('gpt-4-turbo'),
+      prompt: body.message,
+      tools: { getWeather },
+    });
+    
+    return Response.json({ text: result.text });
+  })
+);
+
+const server = yield* createFetchHandler([aiHandler]);
+```
+
+See the [ff-serv guide](/ff-serv/introduction) for HTTP utilities.
+
+## Learn More
+
+Explore the full capabilities of each package:
+
+<CardGroup cols={3}>
+  <Card title="ff-effect" icon="wand-magic-sparkles" href="/ff-effect/introduction">
+    AI SDK, Drizzle, Inngest, and oRPC wrappers
+  </Card>
+  <Card title="ff-ai" icon="brain" href="/ff-ai/introduction">
+    Conversation management and persistence
+  </Card>
+  <Card title="ff-serv" icon="server" href="/ff-serv/introduction">
+    HTTP services, logging, and caching
+  </Card>
+</CardGroup>
+
+## Common Patterns
+
+### Error Handling
+
+```typescript
+import { AiError } from 'ff-effect/for/ai';
+
+const program = Effect.gen(function* () {
+  const result = yield* generateText({ ... }).pipe(
+    Effect.catchTag('AiError', (error) =>
+      Effect.gen(function* () {
+        yield* Effect.logError(`AI request failed: ${error.message}`);
+        return { text: 'Failed to generate response' };
+      })
+    )
+  );
+  
+  return result;
+});
+```
+
+### Service Integration
+
+```typescript
+class WeatherService extends Effect.Service<WeatherService>()(
+  'WeatherService',
+  {
+    succeed: {
+      getWeather: (city: string) => `Weather in ${city}: sunny`,
+    },
+  }
+) {}
+
+const getWeather = yield* tool({
+  description: 'Get weather',
+  inputSchema: { ... },
+  execute: (input) =>
+    Effect.gen(function* () {
+      const weather = yield* WeatherService;
+      return weather.getWeather(input.city);
+    }),
+});
+
+// Provide service when running
+Effect.provide(program, WeatherService.Default);
+```
+
+### Concurrent Operations
+
+```typescript
+const [weather, news] = yield* Effect.all([
+  generateText({ prompt: 'Weather forecast' }),
+  generateText({ prompt: 'Latest news' }),
+], { concurrency: 2 });
+```
+
+## Get Help
+
+Need assistance?
+
+- Explore the package documentation for detailed guides
+- Report issues on [GitHub](https://github.com/fdarian/ff/issues)
+- Explore [Effect.ts documentation](https://effect.website) for core concepts

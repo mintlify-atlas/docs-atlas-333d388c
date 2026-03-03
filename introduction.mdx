@@ -1,0 +1,141 @@
+---
+title: Introduction
+description: Effect.ts utilities for AI, database operations, and HTTP services
+---
+
+## Welcome to FF
+
+FF is a collection of Effect.ts utilities that bring typed, composable patterns to AI development, database operations, and HTTP services. Built on top of Effect.ts, FF provides compile-time safety and functional patterns for modern TypeScript applications.
+
+## Core Philosophy
+
+FF embraces Effect.ts as a foundation for building reliable, type-safe applications. Each package in the FF ecosystem provides:
+
+- **Type Safety**: Compile-time guarantees for database transactions, AI callbacks, and HTTP handlers
+- **Composability**: Build complex workflows from small, testable Effect primitives
+- **Error Handling**: Structured error types that integrate with Effect's error channel
+- **Service Integration**: Seamless integration with popular libraries like Drizzle ORM, AI SDK, Inngest, and oRPC
+
+## The FF Ecosystem
+
+<CardGroup cols={2}>
+  <Card
+    title="ff-effect"
+    icon="wand-magic-sparkles"
+    href="/ff-effect/introduction"
+  >
+    Effect.ts wrappers for AI SDK, Drizzle ORM, Inngest, and oRPC with typed callbacks and compile-time transaction safety.
+  </Card>
+  <Card
+    title="ff-ai"
+    icon="brain"
+    href="/ff-ai/introduction"
+  >
+    AI conversation management with message persistence, usage tracking, and model pricing. Includes Drizzle provider for message storage.
+  </Card>
+  <Card
+    title="ff-serv"
+    icon="server"
+    href="/ff-serv/introduction"
+  >
+    HTTP server utilities with structured logging, caching abstractions for Redis and Bun Redis, and oRPC integration.
+  </Card>
+  <Card
+    title="Documentation"
+    icon="book"
+    href="/quickstart"
+  >
+    Get started with FF in minutes. Follow our quickstart guide to build your first Effect.ts application.
+  </Card>
+</CardGroup>
+
+## Key Features
+
+### AI SDK Integration
+
+Wrap AI SDK's `generateText`, `streamText`, and `tool` with Effect.ts patterns. Use typed callbacks that return Effects instead of Promises:
+
+```typescript
+import { generateText } from 'ff-effect/for/ai';
+
+const result = yield* generateText({
+  model: openai('gpt-4'),
+  prompt: 'Hello!',
+  onFinish: (event) => Effect.log(`Generated: ${event.text}`),
+});
+```
+
+### Compile-Time Transaction Safety
+
+Drizzle transactions with Effect.ts enforce transaction boundaries at compile time:
+
+```typescript
+import { createDrizzle } from 'ff-effect/for/drizzle';
+
+const { db, tx, withTransaction } = createDrizzle(createClient);
+
+// tx() only works inside withTransaction - enforced at compile time
+const program = withTransaction(
+  tx((client) => client.insert(users).values({ name: 'Alice' }))
+);
+```
+
+### Conversation Management
+
+Manage AI conversations with automatic message persistence and usage tracking:
+
+```typescript
+import { createTurnHandler } from 'ff-ai';
+
+const handler = yield* createTurnHandler({
+  identifier: { resourceId: 'user-123', threadId: 'conv-456' },
+});
+
+const history = yield* handler.getHistory({ windowSize: 10 });
+yield* handler.saveUserMessage(userMessage);
+```
+
+### HTTP Server Utilities
+
+Build HTTP servers with structured logging and Effect.ts error handling:
+
+```typescript
+import { basicHandler, createFetchHandler } from 'ff-serv';
+
+const handler = basicHandler('/api/hello', (request) =>
+  Effect.gen(function* () {
+    yield* Effect.log('Handling request');
+    return new Response('Hello!');
+  })
+);
+```
+
+## Why Effect.ts?
+
+Effect.ts provides a powerful foundation for building reliable TypeScript applications:
+
+- **Type-Safe Effects**: Model side effects explicitly in the type system
+- **Composable Services**: Build applications from small, testable services
+- **Structured Concurrency**: Safe concurrent programming with fibers
+- **Error Management**: First-class support for typed errors
+- **Resource Safety**: Automatic cleanup with scopes
+
+FF builds on these primitives to provide domain-specific utilities for AI, databases, and HTTP services.
+
+## Who is FF For?
+
+FF is designed for TypeScript developers who:
+
+- Want compile-time safety for database transactions and AI operations
+- Prefer functional programming patterns with Effect.ts
+- Need structured error handling and logging in production systems
+- Build AI-powered applications with conversation management
+- Work with Drizzle ORM, AI SDK, Inngest, or oRPC
+
+## Get Started
+
+Ready to build with FF? Check out our [installation guide](/installation) or jump straight to the [quickstart](/quickstart) to see FF in action.
+
+<Card title="Quickstart" icon="rocket" href="/quickstart">
+  Get up and running with FF in less than 5 minutes
+</Card>

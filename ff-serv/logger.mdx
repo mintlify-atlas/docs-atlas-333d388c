@@ -1,0 +1,239 @@
+---
+title: Logger
+description: Effect-based logging utilities
+---
+
+ff-serv provides a `Logger` namespace with Effect-based logging functions and a synchronous logger for non-Effect code.
+
+## Usage
+
+### Effect Logging
+
+Use `Logger.info`, `Logger.debug`, `Logger.warn`, and `Logger.error` in Effect code:
+
+```typescript
+import { Logger } from 'ff-serv'
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  yield* Logger.info('Server started')
+  yield* Logger.debug({ port: 3000 }, 'Listening on port')
+  yield* Logger.warn('Deprecated endpoint called')
+  yield* Logger.error('Database connection failed')
+})
+```
+
+### Log with Attributes
+
+Pass an object as the first argument to add structured attributes:
+
+```typescript
+yield* Logger.info({ userId: 123, action: 'login' }, 'User logged in')
+```
+
+Output:
+
+```
+[INFO] User logged in { userId: 123, action: 'login' }
+```
+
+### Log without Attributes
+
+Pass only a message string:
+
+```typescript
+yield* Logger.info('Simple message')
+```
+
+## Synchronous Logger
+
+For logging outside of Effect code (e.g., in callbacks or external libraries), use `Logger.sync()`:
+
+```typescript
+import { Logger } from 'ff-serv'
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const log = yield* Logger.sync()
+
+  // Use log synchronously
+  log.info('This is synchronous')
+  log.debug({ key: 'value' }, 'Debug message')
+  log.warn('Warning')
+  log.error('Error occurred')
+})
+```
+
+### With Initial Annotations
+
+Create a logger with persistent annotations:
+
+```typescript
+const log = yield* Logger.sync({ service: 'api', version: '1.0' })
+
+log.info('Started') // Logs with { service: 'api', version: '1.0' }
+```
+
+### Child Loggers
+
+Create child loggers with additional annotations:
+
+```typescript
+const log = yield* Logger.sync({ service: 'api' })
+
+const requestLog = log.child({ requestId: 'abc123' })
+requestLog.info('Request received') 
+// Logs with { service: 'api', requestId: 'abc123' }
+
+const userLog = requestLog.child({ userId: 456 })
+userLog.info('User action')
+// Logs with { service: 'api', requestId: 'abc123', userId: 456 }
+```
+
+Parent loggers are unaffected by child creation:
+
+```typescript
+const parent = yield* Logger.sync({ service: 'api' })
+const child = parent.child({ requestId: '123' })
+
+parent.info('From parent') // Only { service: 'api' }
+child.info('From child') // { service: 'api', requestId: '123' }
+```
+
+### Per-Call Attributes
+
+Add attributes to individual log calls:
+
+```typescript
+const log = yield* Logger.sync({ service: 'api' })
+log.info({ userId: 123 }, 'User logged in')
+// Logs with { service: 'api', userId: 123 }
+```
+
+## API Reference
+
+### Effect Logging Functions
+
+```typescript
+namespace Logger {
+  function info(message: string): Effect.Effect<void>
+  function info(attributes: Record<string, any>, message?: string): Effect.Effect<void>
+
+  function debug(message: string): Effect.Effect<void>
+  function debug(attributes: Record<string, any>, message?: string): Effect.Effect<void>
+
+  function warn(message: string): Effect.Effect<void>
+  function warn(attributes: Record<string, any>, message?: string): Effect.Effect<void>
+
+  function error(message: string): Effect.Effect<void>
+  function error(attributes: Record<string, any>, message?: string): Effect.Effect<void>
+}
+```
+
+### Synchronous Logger
+
+```typescript
+namespace Logger {
+  function sync(
+    annotations?: Record<string, any>
+  ): Effect.Effect<SyncLogger>
+}
+
+type SyncLogger = {
+  info(message: string): void
+  info(attributes: Record<string, any>, message?: string): void
+
+  debug(message: string): void
+  debug(attributes: Record<string, any>, message?: string): void
+
+  warn(message: string): void
+  warn(attributes: Record<string, any>, message?: string): void
+
+  error(message: string): void
+  error(attributes: Record<string, any>, message?: string): void
+
+  child(annotations: Record<string, any>): SyncLogger
+}
+```
+
+## Complete Example
+
+```typescript
+import { createFetchHandler, basicHandler, Logger } from 'ff-serv'
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  // Create sync logger for server setup
+  const log = yield* Logger.sync({ service: 'http-server' })
+
+  const fetch = yield* createFetchHandler([
+    basicHandler('/user/:id', (request) =>
+      Effect.gen(function* () {
+        const url = new URL(request.url)
+        const userId = url.pathname.split('/').pop()
+
+        // Effect logging with attributes
+        yield* Logger.info({ userId }, 'Fetching user')
+
+        const user = yield* fetchUser(Number(userId))
+
+        yield* Logger.debug({ userId, user }, 'User found')
+        return Response.json(user)
+      })
+    ),
+
+    basicHandler('/health', () => {
+      // Sync logging in non-Effect code
+      log.info('Health check')
+      return new Response('OK')
+    }),
+  ])
+
+  Bun.serve({ port: 3000, fetch })
+  log.info({ port: 3000 }, 'Server started')
+})
+
+function fetchUser(id: number) {
+  return Effect.succeed({ id, name: 'Alice' })
+}
+
+Effect.runPromise(program)
+```
+
+## Integration with createFetchHandler
+
+`createFetchHandler` automatically logs:
+
+- **Request start**: Pathname and request ID
+- **Request end**: Status code (info for 2xx/3xx, warn for others)
+- **Errors**: Unhandled exceptions with full cause
+
+All logs include a unique `requestId` annotation.
+
+Example output:
+
+```
+[INFO] Request started { request: { pathname: '/users/1' }, requestId: 'x7k2a9' }
+[INFO] Request completed with status 200 { requestId: 'x7k2a9' }
+```
+
+## Customizing Log Output
+
+Logger uses Effect's built-in logging system. Customize with Effect's logger layers:
+
+```typescript
+import { Logger as EffectLogger, LogLevel } from 'effect'
+
+const program = Effect.gen(function* () {
+  yield* Logger.info('Custom log output')
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provide(EffectLogger.pretty),
+    Effect.provide(EffectLogger.minimumLogLevel(LogLevel.Debug))
+  )
+)
+```
+
+See [Effect's Logger documentation](https://effect.website/docs/guides/observability/logging) for more options.

@@ -1,0 +1,296 @@
+---
+title: 'ConversationStore'
+description: 'Abstract interface for persisting and retrieving conversation messages'
+icon: 'database'
+---
+
+## Overview
+
+The `ConversationStore` is the core abstraction in ff-ai for managing conversation persistence. It provides a provider-agnostic interface that can be implemented with any storage backend.
+
+## Interface
+
+The `ConversationStore` is defined as an Effect Context.Tag with two methods:
+
+```typescript
+import { Context, Effect } from 'effect';
+import type { StoreError } from './common/store';
+import type { ConversationMessage } from './conversation/core/message';
+import type { ThreadIdentifier } from './conversation/core/thread';
+
+export class ConversationStore extends Context.Tag(
+  'ff-ai/conversation/ConversationStore'
+)<
+  ConversationStore,
+  {
+    getMessages: (
+      params: ThreadIdentifier & { windowSize?: number },
+    ) => Effect.Effect<Array<ConversationMessage.Type>, StoreError>;
+    saveMessages: (
+      params: ThreadIdentifier & {
+        messages: Array<ConversationMessage.Type>;
+      },
+    ) => Effect.Effect<void, StoreError>;
+  }
+>() {}
+```
+
+## Methods
+
+### getMessages
+
+Retrieve messages from a conversation thread.
+
+<ParamField path="params" type="object" required>
+  Parameters for retrieving messages
+
+  <Expandable title="properties">
+    <ParamField path="resourceId" type="string" required>
+      The resource identifier (e.g., user ID, project ID)
+    </ParamField>
+
+    <ParamField path="threadId" type="string" required>
+      The conversation thread identifier
+    </ParamField>
+
+    <ParamField path="windowSize" type="number" default="10">
+      Number of recent user messages to include. The store returns all messages (including assistant and tool messages) from the oldest user message in the window.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="return" type="Effect<ConversationMessage[], StoreError>">
+  An Effect that resolves to an array of messages, ordered chronologically (oldest first)
+</ResponseField>
+
+**Window Size Behavior**
+
+The `windowSize` parameter controls conversation context:
+
+- Counts only **user messages** (not assistant or tool messages)
+- Returns **all messages** from the Nth most recent user message onward
+- Default is 10 user messages
+- Set to `0` to retrieve no messages
+- The implementation handles cases where fewer messages exist than the window size
+
+**Example:**
+
+```typescript
+import { ConversationStore } from 'ff-ai';
+import { Effect } from 'effect';
+
+const program = Effect.gen(function* () {
+  const store = yield* ConversationStore;
+
+  // Get last 5 user messages and all associated messages
+  const messages = yield* store.getMessages({
+    resourceId: 'user-123',
+    threadId: 'thread-456',
+    windowSize: 5
+  });
+
+  console.log(`Retrieved ${messages.length} messages`);
+  return messages;
+});
+```
+
+### saveMessages
+
+Persist messages to a conversation thread.
+
+<ParamField path="params" type="object" required>
+  Parameters for saving messages
+
+  <Expandable title="properties">
+    <ParamField path="resourceId" type="string" required>
+      The resource identifier
+    </ParamField>
+
+    <ParamField path="threadId" type="string" required>
+      The conversation thread identifier
+    </ParamField>
+
+    <ParamField path="messages" type="ConversationMessage[]" required>
+      Array of messages to save. Messages should include `id` and `createdAt` properties.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="return" type="Effect<void, StoreError>">
+  An Effect that resolves when messages are saved successfully
+</ResponseField>
+
+**Example:**
+
+```typescript
+import { ConversationStore, ConversationMessage } from 'ff-ai';
+import { Effect } from 'effect';
+
+const program = Effect.gen(function* () {
+  const store = yield* ConversationStore;
+
+  const messages = [
+    ConversationMessage.fromModelMessage({
+      role: 'user',
+      content: 'Hello!'
+    }),
+    ConversationMessage.fromModelMessage({
+      role: 'assistant',
+      content: 'Hi there! How can I help you today?'
+    })
+  ];
+
+  yield* store.saveMessages({
+    resourceId: 'user-123',
+    threadId: 'thread-456',
+    messages
+  });
+});
+```
+
+## Thread Identifier
+
+Both methods accept a `ThreadIdentifier` which consists of:
+
+```typescript
+export type ThreadIdentifier = {
+  resourceId: ResourceId;  // string
+  threadId: ThreadId;      // string
+};
+```
+
+This two-level identification allows you to:
+
+- Organize conversations by resource (user, project, workspace)
+- Have multiple conversation threads per resource
+- Easily query all conversations for a resource
+
+## Error Handling
+
+Both methods return an Effect that may fail with `StoreError`:
+
+```typescript
+import { Data } from 'effect';
+
+export class StoreError extends Data.TaggedError('ff-ai/StoreError')<{
+  message: string;
+  cause?: unknown;
+}> {
+  constructor(message: string, opts?: { cause?: unknown }) {
+    super({ message, ...opts });
+  }
+}
+```
+
+Handle errors using Effect operators:
+
+```typescript
+const program = Effect.gen(function* () {
+  const store = yield* ConversationStore;
+
+  const messages = yield* store.getMessages({
+    resourceId: 'user-123',
+    threadId: 'thread-456'
+  }).pipe(
+    Effect.catchTag('StoreError', (error) => {
+      console.error('Failed to get messages:', error.message);
+      return Effect.succeed([]);  // Return empty array on error
+    })
+  );
+
+  return messages;
+});
+```
+
+## Implementing a Custom Provider
+
+You can implement a custom storage provider by creating a Layer that provides the `ConversationStore` service:
+
+```typescript
+import { ConversationStore } from 'ff-ai';
+import { Effect, Layer } from 'effect';
+import { StoreError } from 'ff-ai/common/store';
+
+export const MyCustomStoreLayer = Layer.succeed(
+  ConversationStore,
+  {
+    getMessages: Effect.fn(function* (params) {
+      // Your implementation here
+      // Must return Effect<ConversationMessage.Type[], StoreError>
+
+      try {
+        const messages = yield* Effect.tryPromise({
+          try: () => myDatabase.getMessages(params),
+          catch: (error) => new StoreError(
+            'Failed to get messages',
+            { cause: error }
+          )
+        });
+        return messages;
+      } catch (error) {
+        return yield* Effect.fail(
+          new StoreError('Failed to get messages', { cause: error })
+        );
+      }
+    }),
+
+    saveMessages: Effect.fn(function* (params) {
+      // Your implementation here
+      // Must return Effect<void, StoreError>
+
+      yield* Effect.tryPromise({
+        try: () => myDatabase.saveMessages(params),
+        catch: (error) => new StoreError(
+          'Failed to save messages',
+          { cause: error }
+        )
+      });
+    })
+  }
+);
+```
+
+## Built-in Providers
+
+<CardGroup cols={1}>
+  <Card title="Drizzle Provider" icon="database" href="/ff-ai/drizzle-provider">
+    PostgreSQL-backed storage using Drizzle ORM
+  </Card>
+</CardGroup>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Choose appropriate window sizes">
+    Larger window sizes provide more context but increase token costs and latency. Start with the default of 10 user messages and adjust based on your use case.
+  </Accordion>
+
+  <Accordion title="Handle errors gracefully">
+    Always handle `StoreError` in your application logic. Consider fallbacks like returning empty arrays or cached data.
+  </Accordion>
+
+  <Accordion title="Use consistent identifiers">
+    Establish a naming convention for `resourceId` and `threadId` early. For example: `user-{uuid}` and `thread-{uuid}`.
+  </Accordion>
+
+  <Accordion title="Consider pagination">
+    For very long conversations, the window size mechanism provides automatic pagination based on user messages.
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Messages" icon="message" href="/ff-ai/messages">
+    Learn about message types and utilities
+  </Card>
+  <Card title="Turn Handler" icon="arrows-rotate" href="/ff-ai/turn-handler">
+    Use the high-level turn handler API
+  </Card>
+  <Card title="Drizzle Provider" icon="database" href="/ff-ai/drizzle-provider">
+    Set up PostgreSQL storage
+  </Card>
+  <Card title="Examples" icon="code" href="/ff-ai/examples">
+    See complete implementations
+  </Card>
+</CardGroup>

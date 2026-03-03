@@ -1,122 +1,155 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "FF",
+  "theme": "palm",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#7c3aed",
+    "light": "#a78bfa",
+    "dark": "#5b21b6"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/fdarian/ff"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/fdarian/ff"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Overview",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
-            ]
-          },
-          {
-            "group": "Customization",
-            "pages": [
-              "essentials/settings",
-              "essentials/navigation"
-            ]
-          },
-          {
-            "group": "Writing content",
-            "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
-            ]
-          },
-          {
-            "group": "AI tools",
-            "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "introduction",
+              "installation",
+              "quickstart"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "ff-effect",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Overview",
             "pages": [
-              "api-reference/introduction"
+              "ff-effect/introduction"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Core Utilities",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "ff-effect/extract",
+              "ff-effect/run-promise-unwrapped",
+              "ff-effect/wrap-client"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "ff-effect/ai-sdk",
+              "ff-effect/drizzle",
+              "ff-effect/inngest",
+              "ff-effect/orpc"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "ff-effect/examples"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "ff-ai",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "ff-ai/introduction"
+            ]
+          },
+          {
+            "group": "Conversation Management",
+            "pages": [
+              "ff-ai/conversation-store",
+              "ff-ai/messages",
+              "ff-ai/turn-handler"
+            ]
+          },
+          {
+            "group": "Providers",
+            "pages": [
+              "ff-ai/drizzle-provider"
+            ]
+          },
+          {
+            "group": "Pricing",
+            "pages": [
+              "ff-ai/model-pricing"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "ff-ai/examples"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "ff-serv",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "ff-serv/introduction"
+            ]
+          },
+          {
+            "group": "HTTP",
+            "pages": [
+              "ff-serv/basic-server",
+              "ff-serv/fetch-handler",
+              "ff-serv/orpc-integration"
+            ]
+          },
+          {
+            "group": "Caching",
+            "pages": [
+              "ff-serv/cache",
+              "ff-serv/cache-ioredis",
+              "ff-serv/cache-bun-redis"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "ff-serv/logger",
+              "ff-serv/port"
+            ]
+          },
+          {
+            "group": "CLI",
+            "pages": [
+              "ff-serv/cli"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "ff-serv/examples"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

@@ -1,0 +1,655 @@
+---
+title: 'Examples'
+description: 'Complete examples of using ff-ai in real applications'
+icon: 'code'
+---
+
+## Basic Conversation
+
+A simple chatbot with conversation persistence:
+
+```typescript
+import { createTurnHandler, ConversationMessage } from 'ff-ai';
+import { createDrizzleStoreLayer } from 'ff-ai/providers/drizzle';
+import { Effect } from 'effect';
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+import postgres from 'postgres';
+
+// Set up storage
+const sql = postgres(process.env.DATABASE_URL!);
+const storeLayer = createDrizzleStoreLayer(sql);
+
+// Chat function
+const chat = (userId: string, threadId: string, message: string) =>
+  Effect.gen(function* () {
+    const handler = yield* createTurnHandler({
+      identifier: {
+        resourceId: userId,
+        threadId: threadId
+      }
+    });
+
+    // Get conversation history
+    const history = yield* handler.getHistory();
+
+    // Save user message
+    const userMessage = { role: 'user' as const, content: message };
+    yield* handler.saveUserMessage(userMessage);
+
+    // Generate response
+    const result = yield* Effect.tryPromise(() =>
+      generateText({
+        model: openai('gpt-4'),
+        system: 'You are a helpful assistant.',
+        messages: [...history, userMessage],
+        onStepFinish: async (step) => {
+          await handler.onStep(step).pipe(Effect.runPromise);
+        }
+      })
+    );
+
+    return result.text;
+  });
+
+// Use the chat function
+const program = Effect.gen(function* () {
+  const response1 = yield* chat(
+    'user-123',
+    'thread-456',
+    'Hello! My name is Alice.'
+  );
+  console.log('AI:', response1);
+
+  const response2 = yield* chat(
+    'user-123',
+    'thread-456',
+    'What is my name?'
+  );
+  console.log('AI:', response2);  // Should remember "Alice"
+});
+
+await program.pipe(
+  Effect.provide(storeLayer),
+  Effect.runPromise
+);
+```
+
+## Multi-Turn with Tools
+
+Conversation with function calling:
+
+```typescript
+import { createTurnHandler, getModelUsageCost } from 'ff-ai';
+import { createDrizzleStoreLayer } from 'ff-ai/providers/drizzle';
+import { Effect } from 'effect';
+import { generateText, tool } from 'ai';
+import { openai } from '@ai-sdk/openai';
+import { z } from 'zod';
+import postgres from 'postgres';
+
+const sql = postgres(process.env.DATABASE_URL!);
+const storeLayer = createDrizzleStoreLayer(sql);
+
+// Define tools
+const tools = {
+  getWeather: tool({
+    description: 'Get the current weather for a location',
+    parameters: z.object({
+      location: z.string().describe('City name')
+    }),
+    execute: async ({ location }) => {
+      // Simulate API call
+      return {
+        location,
+        temperature: 72,
+        condition: 'Sunny',
+        humidity: 45
+      };
+    }
+  }),
+  
+  searchWeb: tool({
+    description: 'Search the web for information',
+    parameters: z.object({
+      query: z.string().describe('Search query')
+    }),
+    execute: async ({ query }) => {
+      // Simulate search
+      return {
+        results: [
+          { title: 'Result 1', snippet: 'Information about ' + query },
+          { title: 'Result 2', snippet: 'More details on ' + query }
+        ]
+      };
+    }
+  })
+};
+
+const chatWithTools = (userId: string, threadId: string, message: string) =>
+  Effect.gen(function* () {
+    const handler = yield* createTurnHandler({
+      identifier: { resourceId: userId, threadId }
+    });
+
+    const history = yield* handler.getHistory();
+    const userMessage = { role: 'user' as const, content: message };
+    yield* handler.saveUserMessage(userMessage);
+
+    const result = yield* Effect.tryPromise(() =>
+      generateText({
+        model: openai('gpt-4'),
+        tools,
+        maxSteps: 5,  // Allow multiple tool calls
+        messages: [...history, userMessage],
+        onStepFinish: async (step) => {
+          await handler.onStep(step).pipe(Effect.runPromise);
+          
+          console.log(`Step ${step.stepIndex}:`);
+          if (step.toolCalls.length > 0) {
+            for (const call of step.toolCalls) {
+              console.log(`  Tool: ${call.toolName}`);
+              console.log(`  Args:`, call.args);
+            }
+          }
+        }
+      })
+    );
+
+    // Calculate cost
+    const cost = yield* getModelUsageCost({
+      model: result.model,
+      usage: result.usage
+    });
+
+    return {
+      text: result.text,
+      cost: cost?.total || 0,
+      toolCalls: result.toolCalls.length
+    };
+  });
+
+// Use the assistant
+const program = Effect.gen(function* () {
+  const result = yield* chatWithTools(
+    'user-789',
+    'thread-abc',
+    'What is the weather in San Francisco and New York?'
+  );
+
+  console.log('\nAssistant:', result.text);
+  console.log('Tool calls:', result.toolCalls);
+  console.log('Cost: $' + result.cost.toFixed(6));
+});
+
+await program.pipe(
+  Effect.provide(storeLayer),
+  Effect.runPromise
+);
+```
+
+## Streaming Chat
+
+Streaming responses with conversation persistence:
+
+```typescript
+import { createTurnHandler } from 'ff-ai';
+import { createDrizzleStoreLayer } from 'ff-ai/providers/drizzle';
+import { Effect } from 'effect';
+import { streamText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+import postgres from 'postgres';
+
+const sql = postgres(process.env.DATABASE_URL!);
+const storeLayer = createDrizzleStoreLayer(sql);
+
+const streamChat = (userId: string, threadId: string, message: string) =>
+  Effect.gen(function* () {
+    const handler = yield* createTurnHandler({
+      identifier: { resourceId: userId, threadId }
+    });
+
+    const history = yield* handler.getHistory();
+    const userMessage = { role: 'user' as const, content: message };
+    yield* handler.saveUserMessage(userMessage);
+
+    const stream = yield* Effect.tryPromise(() =>
+      streamText({
+        model: openai('gpt-4'),
+        messages: [...history, userMessage],
+        onFinish: async (result) => {
+          // Save complete response after streaming
+          await handler.onStep({
+            stepIndex: 0,
+            response: result
+          }).pipe(Effect.runPromise);
+        }
+      })
+    );
+
+    // Stream to console
+    for await (const chunk of stream.textStream) {
+      process.stdout.write(chunk);
+    }
+    process.stdout.write('\n');
+
+    return stream;
+  });
+
+const program = Effect.gen(function* () {
+  yield* streamChat(
+    'user-123',
+    'thread-456',
+    'Write a haiku about programming'
+  );
+});
+
+await program.pipe(
+  Effect.provide(storeLayer),
+  Effect.runPromise
+);
+```
+
+## Cost Tracking Dashboard
+
+Track costs across multiple users and conversations:
+
+```typescript
+import { getModelUsageCost } from 'ff-ai';
+import { Effect, Ref } from 'effect';
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+type CostReport = {
+  userId: string;
+  requests: number;
+  totalCost: number;
+  totalTokens: number;
+};
+
+const trackUsage = Effect.gen(function* () {
+  const reports = yield* Ref.make(new Map<string, CostReport>());
+
+  const makeRequest = (userId: string, prompt: string) =>
+    Effect.gen(function* () {
+      const result = yield* Effect.tryPromise(() =>
+        generateText({
+          model: openai('gpt-4'),
+          messages: [{ role: 'user', content: prompt }]
+        })
+      );
+
+      const cost = yield* getModelUsageCost({
+        model: result.model,
+        usage: result.usage
+      });
+
+      // Update report
+      yield* Ref.update(reports, (map) => {
+        const current = map.get(userId) || {
+          userId,
+          requests: 0,
+          totalCost: 0,
+          totalTokens: 0
+        };
+
+        map.set(userId, {
+          ...current,
+          requests: current.requests + 1,
+          totalCost: current.totalCost + (cost?.total || 0),
+          totalTokens: current.totalTokens + (result.usage.totalTokens || 0)
+        });
+
+        return map;
+      });
+
+      return result.text;
+    });
+
+  // Simulate multiple users
+  const users = ['user-1', 'user-2', 'user-3'];
+  const prompts = [
+    'Explain AI',
+    'Write a poem',
+    'Help me debug this code'
+  ];
+
+  // Make requests
+  for (const user of users) {
+    for (const prompt of prompts) {
+      yield* makeRequest(user, prompt);
+    }
+  }
+
+  // Print report
+  const finalReports = yield* Ref.get(reports);
+  
+  console.log('\n=== Cost Report ===');
+  console.log('User       | Requests | Total Cost | Tokens');
+  console.log('-'.repeat(50));
+  
+  for (const report of finalReports.values()) {
+    console.log(
+      `${report.userId.padEnd(10)} | ` +
+      `${report.requests.toString().padEnd(8)} | ` +
+      `$${report.totalCost.toFixed(4).padEnd(9)} | ` +
+      `${report.totalTokens}`
+    );
+  }
+
+  return finalReports;
+});
+
+await trackUsage.pipe(Effect.runPromise);
+```
+
+## Custom Store Implementation
+
+Implement a custom in-memory store:
+
+```typescript
+import { ConversationStore, ConversationMessage } from 'ff-ai';
+import { Effect, Layer } from 'effect';
+import { StoreError } from 'ff-ai/common/store';
+import type { ThreadIdentifier } from 'ff-ai/conversation/core/thread';
+
+class InMemoryStore {
+  private messages = new Map<string, ConversationMessage.Type[]>();
+
+  private getKey(id: ThreadIdentifier): string {
+    return `${id.resourceId}:${id.threadId}`;
+  }
+
+  getMessages(
+    params: ThreadIdentifier & { windowSize?: number }
+  ): Effect.Effect<ConversationMessage.Type[], StoreError> {
+    return Effect.try({
+      try: () => {
+        const key = this.getKey(params);
+        const all = this.messages.get(key) || [];
+        const windowSize = params.windowSize ?? 10;
+
+        if (windowSize === 0) return [];
+
+        // Find user messages
+        const userMessages = all.filter((m) => m.role === 'user');
+        const recentUserMessages = userMessages.slice(-windowSize);
+
+        if (recentUserMessages.length === 0) return [];
+
+        // Get index of oldest user message in window
+        const oldestUserMsg = recentUserMessages[0];
+        const startIndex = all.indexOf(oldestUserMsg);
+
+        // Return all messages from that point
+        return all.slice(startIndex);
+      },
+      catch: (error) => new StoreError('Failed to get messages', { cause: error })
+    });
+  }
+
+  saveMessages(
+    params: ThreadIdentifier & { messages: ConversationMessage.Type[] }
+  ): Effect.Effect<void, StoreError> {
+    return Effect.try({
+      try: () => {
+        const key = this.getKey(params);
+        const existing = this.messages.get(key) || [];
+        this.messages.set(key, [...existing, ...params.messages]);
+      },
+      catch: (error) => new StoreError('Failed to save messages', { cause: error })
+    });
+  }
+}
+
+const InMemoryStoreLayer = Layer.succeed(
+  ConversationStore,
+  {
+    getMessages: Effect.fn(function* (params) {
+      const store = new InMemoryStore();
+      return yield* store.getMessages(params);
+    }),
+    saveMessages: Effect.fn(function* (params) {
+      const store = new InMemoryStore();
+      yield* store.saveMessages(params);
+    })
+  }
+);
+
+// Use the in-memory store
+const program = Effect.gen(function* () {
+  const handler = yield* createTurnHandler({
+    identifier: { resourceId: 'user-123', threadId: 'thread-456' }
+  });
+
+  yield* handler.saveUserMessage({
+    role: 'user',
+    content: 'Hello!'
+  });
+
+  const messages = yield* handler.getHistory();
+  console.log('Messages:', messages);
+});
+
+await program.pipe(
+  Effect.provide(InMemoryStoreLayer),
+  Effect.runPromise
+);
+```
+
+## RAG (Retrieval-Augmented Generation)
+
+Combine conversation history with document retrieval:
+
+```typescript
+import { createTurnHandler } from 'ff-ai';
+import { createDrizzleStoreLayer } from 'ff-ai/providers/drizzle';
+import { Effect } from 'effect';
+import { generateText, tool } from 'ai';
+import { openai } from '@ai-sdk/openai';
+import { z } from 'zod';
+import postgres from 'postgres';
+
+const sql = postgres(process.env.DATABASE_URL!);
+const storeLayer = createDrizzleStoreLayer(sql);
+
+// Mock document store
+const documents = [
+  { id: '1', content: 'Product A costs $99 and includes free shipping.' },
+  { id: '2', content: 'Product B costs $149 and has a 2-year warranty.' },
+  { id: '3', content: 'Returns are accepted within 30 days.' }
+];
+
+const tools = {
+  searchDocuments: tool({
+    description: 'Search the knowledge base for relevant information',
+    parameters: z.object({
+      query: z.string().describe('Search query')
+    }),
+    execute: async ({ query }) => {
+      // Simple keyword search (use vector DB in production)
+      const results = documents.filter((doc) =>
+        doc.content.toLowerCase().includes(query.toLowerCase())
+      );
+      return { documents: results };
+    }
+  })
+};
+
+const ragChat = (userId: string, threadId: string, message: string) =>
+  Effect.gen(function* () {
+    const handler = yield* createTurnHandler({
+      identifier: { resourceId: userId, threadId }
+    });
+
+    const history = yield* handler.getHistory();
+    const userMessage = { role: 'user' as const, content: message };
+    yield* handler.saveUserMessage(userMessage);
+
+    const result = yield* Effect.tryPromise(() =>
+      generateText({
+        model: openai('gpt-4'),
+        system: `You are a helpful customer service assistant. 
+                 Use the searchDocuments tool to find relevant information 
+                 before answering questions.`,
+        tools,
+        maxSteps: 5,
+        messages: [...history, userMessage],
+        onStepFinish: async (step) => {
+          await handler.onStep(step).pipe(Effect.runPromise);
+        }
+      })
+    );
+
+    return result.text;
+  });
+
+const program = Effect.gen(function* () {
+  const response = yield* ragChat(
+    'customer-456',
+    'support-789',
+    'What is the return policy for Product B?'
+  );
+
+  console.log('Assistant:', response);
+});
+
+await program.pipe(
+  Effect.provide(storeLayer),
+  Effect.runPromise
+);
+```
+
+## Multi-Agent System
+
+Orchestrate multiple specialized agents:
+
+```typescript
+import { createTurnHandler } from 'ff-ai';
+import { createDrizzleStoreLayer } from 'ff-ai/providers/drizzle';
+import { Effect } from 'effect';
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+import postgres from 'postgres';
+
+const sql = postgres(process.env.DATABASE_URL!);
+const storeLayer = createDrizzleStoreLayer(sql);
+
+// Define agent roles
+const agents = {
+  researcher: {
+    system: 'You are a research assistant. Gather and analyze information.',
+    model: openai('gpt-4')
+  },
+  writer: {
+    system: 'You are a creative writer. Write engaging content.',
+    model: openai('gpt-4')
+  },
+  editor: {
+    system: 'You are an editor. Review and improve content.',
+    model: openai('gpt-4')
+  }
+};
+
+const multiAgentTask = (userId: string, topic: string) =>
+  Effect.gen(function* () {
+    // Research phase
+    const researchHandler = yield* createTurnHandler({
+      identifier: { resourceId: userId, threadId: `research-${topic}` }
+    });
+
+    const researchMessage = {
+      role: 'user' as const,
+      content: `Research this topic: ${topic}`
+    };
+    yield* researchHandler.saveUserMessage(researchMessage);
+
+    const researchResult = yield* Effect.tryPromise(() =>
+      generateText({
+        model: agents.researcher.model,
+        system: agents.researcher.system,
+        messages: [researchMessage],
+        onStepFinish: async (step) => {
+          await researchHandler.onStep(step).pipe(Effect.runPromise);
+        }
+      })
+    );
+
+    console.log('Research complete:', researchResult.text.slice(0, 100) + '...');
+
+    // Writing phase
+    const writerHandler = yield* createTurnHandler({
+      identifier: { resourceId: userId, threadId: `writing-${topic}` }
+    });
+
+    const writerMessage = {
+      role: 'user' as const,
+      content: `Write an article based on this research:\n\n${researchResult.text}`
+    };
+    yield* writerHandler.saveUserMessage(writerMessage);
+
+    const writerResult = yield* Effect.tryPromise(() =>
+      generateText({
+        model: agents.writer.model,
+        system: agents.writer.system,
+        messages: [writerMessage],
+        onStepFinish: async (step) => {
+          await writerHandler.onStep(step).pipe(Effect.runPromise);
+        }
+      })
+    );
+
+    console.log('Writing complete:', writerResult.text.slice(0, 100) + '...');
+
+    // Editing phase
+    const editorHandler = yield* createTurnHandler({
+      identifier: { resourceId: userId, threadId: `editing-${topic}` }
+    });
+
+    const editorMessage = {
+      role: 'user' as const,
+      content: `Review and improve this article:\n\n${writerResult.text}`
+    };
+    yield* editorHandler.saveUserMessage(editorMessage);
+
+    const finalResult = yield* Effect.tryPromise(() =>
+      generateText({
+        model: agents.editor.model,
+        system: agents.editor.system,
+        messages: [editorMessage],
+        onStepFinish: async (step) => {
+          await editorHandler.onStep(step).pipe(Effect.runPromise);
+        }
+      })
+    );
+
+    console.log('\n=== Final Article ===');
+    console.log(finalResult.text);
+
+    return finalResult.text;
+  });
+
+const program = multiAgentTask('user-123', 'The Future of AI');
+
+await program.pipe(
+  Effect.provide(storeLayer),
+  Effect.runPromise
+);
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Conversation Store" icon="database" href="/ff-ai/conversation-store">
+    Learn about the storage interface
+  </Card>
+  <Card title="Turn Handler" icon="arrows-rotate" href="/ff-ai/turn-handler">
+    Master multi-turn conversations
+  </Card>
+  <Card title="Model Pricing" icon="dollar-sign" href="/ff-ai/model-pricing">
+    Track and optimize costs
+  </Card>
+  <Card title="Drizzle Provider" icon="database" href="/ff-ai/drizzle-provider">
+    Set up PostgreSQL storage
+  </Card>
+</CardGroup>

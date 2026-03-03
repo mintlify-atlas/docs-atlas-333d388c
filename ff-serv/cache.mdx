@@ -1,0 +1,333 @@
+---
+title: Cache
+description: In-memory caching with SWR and pluggable adapters
+---
+
+ff-serv provides a powerful caching system built on Effect's `Cache` with support for:
+
+- **Stale-While-Revalidate (SWR)**: Serve stale data while refreshing in the background
+- **TTL per entry**: Override TTL on a per-key basis
+- **Pluggable adapters**: Memory, Redis (ioredis/bun-redis), or tiered caching
+- **Type-safe**: Full TypeScript inference
+
+## Installation
+
+```bash
+bun add ff-serv effect
+```
+
+## Basic Usage
+
+```typescript
+import { Cache } from 'ff-serv/cache'
+import { Effect, Duration } from 'effect'
+
+const program = Effect.gen(function* () {
+  const cache = yield* Cache.make({
+    ttl: Duration.minutes(5),
+    lookup: (userId: number) => 
+      Effect.gen(function* () {
+        // Fetch from database
+        const user = yield* fetchUser(userId)
+        return user
+      }),
+  })
+
+  const user = yield* cache.get(1)
+  yield* Effect.log(user)
+})
+```
+
+## Cache Options
+
+### TTL (Time to Live)
+
+How long cached values remain fresh:
+
+```typescript
+Cache.make({
+  ttl: Duration.seconds(30),
+  lookup: (key: string) => Effect.succeed(`value-${key}`),
+})
+```
+
+### SWR (Stale-While-Revalidate)
+
+After TTL expires, serve stale data while refreshing in the background:
+
+```typescript
+Cache.make({
+  ttl: Duration.minutes(5),
+  swr: Duration.minutes(10), // Total window: 15 minutes
+  lookup: (key: string) => fetchFromDatabase(key),
+})
+```
+
+**Behavior:**
+- **0-5 min**: Fresh value served
+- **5-15 min**: Stale value served, background refresh triggered
+- **15+ min**: Wait for fresh value (cache expired)
+
+### Lookup Function
+
+The function that fetches values on cache miss:
+
+```typescript
+Cache.make({
+  ttl: Duration.minutes(5),
+  lookup: (key: string) => 
+    Effect.gen(function* () {
+      const response = yield* HttpClient.get(`https://api.example.com/data/${key}`)
+      return yield* response.json
+    }),
+})
+```
+
+Return type can be:
+- The value directly: `Value`
+- A cache entry with custom TTL: `Cache.entry(value, { ttl, swr })`
+
+## Cache Instance API
+
+### `get(key)`
+
+Retrieve a value from the cache:
+
+```typescript
+const user = yield* cache.get(123)
+```
+
+On cache miss, calls `lookup(key)` and stores the result.
+
+### `invalidate(key)`
+
+Remove a single key:
+
+```typescript
+yield* cache.invalidate(123)
+```
+
+### `invalidateAll`
+
+Clear all cached entries:
+
+```typescript
+yield* cache.invalidateAll
+```
+
+## Per-Entry TTL
+
+Override TTL and SWR for specific entries:
+
+```typescript
+import { Cache } from 'ff-serv/cache'
+import { Duration } from 'effect'
+
+const cache = yield* Cache.make({
+  ttl: Duration.minutes(5),
+  lookup: (type: string) => {
+    if (type === 'config') {
+      // Config cached for 1 hour
+      return Effect.succeed(
+        Cache.entry({ setting: 'value' }, {
+          ttl: Duration.hours(1),
+        })
+      )
+    }
+    // Default TTL (5 minutes)
+    return Effect.succeed({ data: 'default' })
+  },
+})
+```
+
+## SWR Example
+
+```typescript
+import { Cache } from 'ff-serv/cache'
+import { Effect, Duration, Ref, TestClock } from 'effect'
+
+const program = Effect.gen(function* () {
+  const callCount = yield* Ref.make(0)
+
+  const cache = yield* Cache.make({
+    ttl: Duration.minutes(5),
+    swr: Duration.minutes(10),
+    lookup: (id: number) => 
+      Effect.gen(function* () {
+        const count = yield* Ref.updateAndGet(callCount, n => n + 1)
+        return `user-${id}-v${count}`
+      }),
+  })
+
+  // First call: cache miss
+  const v1 = yield* cache.get(1)
+  yield* Effect.log(v1) // "user-1-v1"
+
+  // Simulate 7 minutes passing (past TTL, within SWR)
+  yield* TestClock.adjust(Duration.minutes(7))
+
+  // Second call: returns stale value immediately
+  const v2 = yield* cache.get(1)
+  yield* Effect.log(v2) // "user-1-v1" (stale)
+
+  // Background refresh completes
+  yield* Effect.yieldNow()
+
+  // Third call: returns fresh value
+  const v3 = yield* cache.get(1)
+  yield* Effect.log(v3) // "user-1-v2" (refreshed)
+})
+```
+
+## Cache Adapters
+
+By default, `Cache.make()` uses in-memory storage. Add persistence with adapters:
+
+### Memory Adapter (Default)
+
+```typescript
+import { Cache, CacheAdapter } from 'ff-serv/cache'
+
+const cache = yield* Cache.make({
+  ttl: Duration.minutes(5),
+  lookup: (key: string) => Effect.succeed(key),
+  adapter: CacheAdapter.memory({ capacity: 1000 }),
+})
+```
+
+### Redis Adapter
+
+See [Cache with ioredis](/ff-serv/cache-ioredis) or [Cache with bun-redis](/ff-serv/cache-bun-redis).
+
+```typescript
+import { CacheAdapter } from 'ff-serv/cache'
+import { ioredis } from 'ff-serv/cache/ioredis'
+import Redis from 'ioredis'
+
+const redis = new Redis()
+const client = ioredis(redis)
+
+const cache = yield* Cache.make({
+  ttl: Duration.minutes(5),
+  lookup: (key: string) => fetchData(key),
+  adapter: CacheAdapter.redis({
+    client,
+    keyPrefix: 'myapp',
+  }),
+})
+```
+
+### Tiered Adapter
+
+Combine L1 (memory) and L2 (Redis) for optimal performance:
+
+```typescript
+const l1 = CacheAdapter.memory({ capacity: 100 })
+const l2 = CacheAdapter.redis({ client, keyPrefix: 'app' })
+
+const cache = yield* Cache.make({
+  ttl: Duration.minutes(5),
+  lookup: (key: string) => fetchData(key),
+  adapter: CacheAdapter.tiered(l1, l2),
+})
+```
+
+**How it works:**
+1. Check L1 (memory) first
+2. If miss, check L2 (Redis)
+3. On write, update both L1 and L2
+
+## Error Propagation
+
+Lookup errors are propagated to the caller:
+
+```typescript
+const cache = yield* Cache.make({
+  ttl: Duration.minutes(5),
+  lookup: (key: string) => Effect.fail('Database error'),
+})
+
+const result = yield* cache.get('key').pipe(Effect.either)
+
+if (result._tag === 'Left') {
+  yield* Effect.log('Cache lookup failed:', result.left)
+}
+```
+
+## Complete Example
+
+```typescript
+import { Cache, CacheAdapter } from 'ff-serv/cache'
+import { Effect, Duration, Context } from 'effect'
+import { HttpClient } from '@effect/platform'
+
+class Database extends Context.Tag('Database')<
+  Database,
+  { query: (sql: string) => Effect.Effect<unknown[]> }
+>() {}
+
+const program = Effect.gen(function* () {
+  const db = yield* Database
+
+  const userCache = yield* Cache.make({
+    ttl: Duration.minutes(5),
+    swr: Duration.minutes(5),
+    lookup: (userId: number) =>
+      Effect.gen(function* () {
+        yield* Effect.log(`Fetching user ${userId} from database`)
+        const rows = yield* db.query(`SELECT * FROM users WHERE id = ${userId}`)
+        return rows[0]
+      }),
+    adapter: CacheAdapter.memory({ capacity: 1000 }),
+  })
+
+  // First call: cache miss, fetches from DB
+  const user1 = yield* userCache.get(1)
+  yield* Effect.log('First call:', user1)
+
+  // Second call: cache hit, no DB query
+  const user2 = yield* userCache.get(1)
+  yield* Effect.log('Second call:', user2)
+
+  // Invalidate
+  yield* userCache.invalidate(1)
+
+  // Third call: cache miss again
+  const user3 = yield* userCache.get(1)
+  yield* Effect.log('Third call:', user3)
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provideService(Database, {
+      query: (sql) => Effect.succeed([{ id: 1, name: 'Alice' }]),
+    })
+  )
+)
+```
+
+## Type Signature
+
+```typescript
+namespace Cache {
+  function make<Key, Value, Error = never, R = never>(opts: {
+    ttl: Duration.DurationInput
+    swr?: Duration.DurationInput
+    lookup: (key: Key) => Effect.Effect<LookupResult<Value>, Error, R>
+    adapter?: CacheAdapter<Key, Value>
+  }): Effect.Effect<CacheInstance<Key, Value, Error>, never, R>
+
+  type LookupResult<Value> = Value | Entry<Value>
+
+  function entry<Value>(
+    value: Value,
+    opts: { ttl: Duration.DurationInput; swr?: Duration.DurationInput }
+  ): Entry<Value>
+}
+
+type CacheInstance<Key, Value, Error> = {
+  readonly get: (key: Key) => Effect.Effect<Value, Error>
+  readonly invalidate: (key: Key) => Effect.Effect<void>
+  readonly invalidateAll: Effect.Effect<void>
+}
+```

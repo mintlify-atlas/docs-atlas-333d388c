@@ -1,0 +1,144 @@
+---
+title: Port Utilities
+description: Find available ports with getPort
+---
+
+ff-serv provides a `getPort` utility that wraps the [get-port](https://github.com/sindresorhus/get-port) library in Effect.
+
+## Installation
+
+```bash
+bun add get-port
+```
+
+## Usage
+
+```typescript
+import { getPort } from 'ff-serv'
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const port = yield* getPort()
+  yield* Effect.log(`Available port: ${port}`)
+
+  Bun.serve({
+    port,
+    fetch: () => new Response('OK'),
+  })
+})
+
+Effect.runPromise(program)
+```
+
+## With Options
+
+### Preferred Port
+
+Try a specific port first:
+
+```typescript
+const port = yield* getPort({ port: 3000 })
+// Returns 3000 if available, otherwise finds next available port
+```
+
+### Port Range
+
+Search within a range:
+
+```typescript
+const port = yield* getPort({
+  port: [3000, 3001, 3002, 3003],
+})
+```
+
+### Exclude Ports
+
+Avoid specific ports:
+
+```typescript
+const port = yield* getPort({
+  exclude: [3000, 8080],
+})
+```
+
+## Type Signature
+
+```typescript
+function getPort(
+  options?: {
+    port?: number | number[]
+    exclude?: number[]
+    host?: string
+  }
+): Effect.Effect<number>
+```
+
+See [get-port documentation](https://github.com/sindresorhus/get-port#options) for all options.
+
+## Complete Example
+
+```typescript
+import { createFetchHandler, basicHandler, getPort, Logger } from 'ff-serv'
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  // Find available port, preferring 3000
+  const port = yield* getPort({ port: 3000 })
+
+  const fetch = yield* createFetchHandler([
+    basicHandler('/health', () => new Response('OK')),
+  ])
+
+  Bun.serve({ port, fetch })
+
+  yield* Logger.info({ port }, `Server running on http://localhost:${port}`)
+})
+
+Effect.runPromise(program)
+```
+
+## Use Cases
+
+### Development Servers
+
+Automatically find available ports for parallel development:
+
+```typescript
+const port = yield* getPort({ port: [3000, 3001, 3002] })
+yield* Effect.log(`Dev server on port ${port}`)
+```
+
+### Test Suites
+
+Ensure tests don't conflict:
+
+```typescript
+import { describe, it } from '@effect/vitest'
+
+describe('HTTP tests', () => {
+  it.effect('server test', () =>
+    Effect.gen(function* () {
+      const port = yield* getPort()
+      // Each test gets a unique port
+    })
+  )
+})
+```
+
+### Multi-Service Applications
+
+Allocate ports for multiple services:
+
+```typescript
+const program = Effect.gen(function* () {
+  const apiPort = yield* getPort({ port: 3000 })
+  const adminPort = yield* getPort({ port: 3001 })
+  const metricsPort = yield* getPort({ port: 9090 })
+
+  yield* Effect.all([
+    startApiServer(apiPort),
+    startAdminServer(adminPort),
+    startMetricsServer(metricsPort),
+  ])
+})
+```

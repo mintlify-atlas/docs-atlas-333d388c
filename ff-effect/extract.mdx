@@ -1,0 +1,274 @@
+---
+title: extract
+description: Extract service dependencies from Effect functions to move them up the dependency stack
+---
+
+## Overview
+
+The `extract` function allows you to "extract" service dependencies from an Effect function, moving those dependencies from the return type to the calling context. This is essential when building service containers that expose methods which internally depend on other services.
+
+## Signature
+
+```typescript
+function extract<
+  P extends any[],
+  A,
+  E,
+  R,
+  INFERRED_EXCLUDED extends Context.Tag<any, any> = never,
+  EXCLUDED = InferClass<INFERRED_EXCLUDED>,
+>(
+  effect: (...params: P) => Effect.Effect<A, E, R>,
+  options?: { exclude?: Array<INFERRED_EXCLUDED> }
+): Effect.Effect<
+  (...params: P) => Effect.Effect<A, E, Extract<R, EXCLUDED>>,
+  never,
+  Exclude<R, EXCLUDED>
+>
+```
+
+### Parameters
+
+<ParamField path="effect" type="(...params: P) => Effect.Effect<A, E, R>" required>
+  The Effect function whose dependencies should be extracted. The function can accept any number of parameters.
+</ParamField>
+
+<ParamField path="options.exclude" type="Array<Context.Tag<any, any>>">
+  Optional array of service tags to exclude from extraction. Excluded services remain as requirements in the returned function.
+</ParamField>
+
+### Returns
+
+Returns an `Effect` that yields a new function with the same signature as the input, but with service dependencies moved to the outer Effect's requirements.
+
+- **Input function type**: `(...params: P) => Effect.Effect<A, E, R>`
+- **Output function type**: `(...params: P) => Effect.Effect<A, E, Extract<R, EXCLUDED>>`
+- **Effect requirements**: `Exclude<R, EXCLUDED>`
+
+## Basic Usage
+
+### Without extract
+
+Here's what happens when you don't use `extract`:
+
+```typescript
+import { Effect } from 'effect';
+
+class ServiceA extends Effect.Service<ServiceA>()('A', {
+  sync: () => ({ val: 'A' }),
+}) {}
+
+class Container extends Effect.Service<Container>()('Container', {
+  effect: Effect.gen(function* () {
+    return {
+      getVal: function* () {
+        return (yield* ServiceA).val;
+      }
+    };
+  })
+}) {}
+
+// Problem: ServiceA is required BOTH when creating Container AND when calling getVal
+const main = Effect.gen(function* () {
+  const container = yield* Container; // requires ServiceA here
+  const value = yield* container.getVal(); // AND here!
+});
+```
+
+### With extract
+
+`extract` solves this by capturing the dependencies when the container is created:
+
+```typescript
+import { extract } from 'ff-effect';
+import { Effect } from 'effect';
+
+class ServiceA extends Effect.Service<ServiceA>()('A', {
+  sync: () => ({ val: 'A' }),
+}) {}
+
+class Container extends Effect.Service<Container>()('Container', {
+  dependencies: [ServiceA.Default],
+  effect: Effect.gen(function* () {
+    return {
+      // Extract captures ServiceA's runtime context
+      getVal: yield* extract(function* () {
+        return (yield* ServiceA).val;
+      })
+    };
+  })
+}) {}
+
+// ServiceA is only required when providing Container.Default
+const main = Effect.gen(function* () {
+  const container = yield* Container;
+  const value = yield* container.getVal(); // No ServiceA requirement!
+  return value; // 'A'
+}).pipe(Effect.provide(Container.Default));
+```
+
+<Note>
+The dependencies are captured at the time the extracted function is created, not when it's called. This allows the returned function to be called without requiring those services in its context.
+</Note>
+
+## Excluding Services
+
+Sometimes you want to extract most dependencies but keep some as runtime requirements. Use the `exclude` option:
+
+```typescript
+import { extract } from 'ff-effect';
+import { Effect, Layer } from 'effect';
+
+class ServiceA extends Effect.Service<ServiceA>()('A', {
+  sync: () => ({ val: 'A' }),
+}) {}
+
+class ServiceB extends Effect.Service<ServiceB>()('B', {
+  sync: () => ({ val: 'B' }),
+}) {}
+
+class Container extends Effect.Service<Container>()('Container', {
+  dependencies: [
+    ServiceA.Default,
+    Layer.succeed(ServiceB, ServiceB.make({ val: 'default-B' }))
+  ],
+  effect: Effect.gen(function* () {
+    return {
+      // Extract ServiceA, but exclude ServiceB
+      getVal: yield* extract(
+        function* () {
+          return {
+            a: (yield* ServiceA).val,
+            b: (yield* ServiceB).val
+          };
+        },
+        { exclude: [ServiceB] } // ServiceB remains a runtime requirement
+      )
+    };
+  })
+}) {}
+
+const main = Effect.gen(function* () {
+  const container = yield* Container;
+  
+  // ServiceB can be overridden at call-time
+  const result = yield* container.getVal().pipe(
+    Effect.provideService(ServiceB, ServiceB.make({ val: 'custom-B' }))
+  );
+  
+  return result; // { a: 'A', b: 'custom-B' }
+}).pipe(Effect.provide(Container.Default));
+```
+
+### Type Signature with Exclusions
+
+When using `exclude`, the type signature changes:
+
+```typescript
+const Container_effect = Effect.gen(function* () {
+  return {
+    getVal: yield* extract(getVal, { exclude: [ServiceB] })
+  };
+});
+
+// Type:
+Effect.Effect<
+  {
+    getVal: () => Effect.Effect<
+      { a: string; b: string },
+      never,
+      ServiceB  // ServiceB remains here
+    >
+  },
+  never,
+  ServiceA    // ServiceA moved here
+>
+```
+
+## Real-World Example
+
+Here's a practical example using `extract` to build a user service:
+
+```typescript
+import { extract } from 'ff-effect';
+import { Effect } from 'effect';
+
+class Database extends Effect.Service<Database>()('Database', {
+  effect: Effect.succeed({
+    query: (sql: string) => Effect.succeed({ id: 1, name: 'Alice' })
+  })
+}) {}
+
+class Logger extends Effect.Service<Logger>()('Logger', {
+  effect: Effect.succeed({
+    info: (msg: string) => Effect.sync(() => console.log(msg))
+  })
+}) {}
+
+class UserService extends Effect.Service<UserService>()('UserService', {
+  dependencies: [Database.Default, Logger.Default],
+  effect: Effect.gen(function* () {
+    // Extract both Database and Logger dependencies
+    const findUser = yield* extract(function* (id: number) {
+      const logger = yield* Logger;
+      const db = yield* Database;
+      
+      yield* logger.info(`Finding user ${id}`);
+      return yield* db.query(`SELECT * FROM users WHERE id = ${id}`);
+    });
+    
+    return { findUser };
+  })
+}) {}
+
+// Usage - no need to provide Database or Logger here
+const program = Effect.gen(function* () {
+  const users = yield* UserService;
+  const user = yield* users.findUser(1);
+  return user;
+}).pipe(Effect.provide(UserService.Default));
+```
+
+## Common Patterns
+
+### Service Containers
+
+Use `extract` when building service containers that expose multiple methods:
+
+```typescript
+class MyService extends Effect.Service<MyService>()('MyService', {
+  effect: Effect.gen(function* () {
+    return {
+      method1: yield* extract(/* ... */),
+      method2: yield* extract(/* ... */),
+      method3: yield* extract(/* ... */)
+    };
+  })
+}) {}
+```
+
+### Selective Extraction
+
+Mix extracted and non-extracted methods based on your needs:
+
+```typescript
+class MyService extends Effect.Service<MyService>()('MyService', {
+  effect: Effect.gen(function* () {
+    return {
+      // Dependencies extracted - no runtime requirements
+      cached: yield* extract(expensiveOperation),
+      
+      // Dependencies NOT extracted - requires services at call-time
+      dynamic: function* (param: string) {
+        return yield* someService(param);
+      }
+    };
+  })
+}) {}
+```
+
+## See Also
+
+- [Drizzle Integration](/ff-effect/drizzle) - Uses `extract` internally for database operations
+- [Inngest Integration](/ff-effect/inngest) - Uses `extract` for function handlers
+- [oRPC Integration](/ff-effect/orpc) - Uses `extract` for procedure handlers

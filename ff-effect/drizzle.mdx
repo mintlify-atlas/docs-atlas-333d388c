@@ -1,0 +1,429 @@
+---
+title: Drizzle Integration
+description: Type-safe database operations with Effect and Drizzle ORM
+---
+
+## Overview
+
+The Drizzle integration provides Effect-first database operations with automatic error handling and built-in transaction support. Create a Drizzle client wrapper once and use it throughout your application with full type safety.
+
+## Installation
+
+```bash
+bun add ff-effect effect drizzle-orm
+```
+
+You'll also need a Drizzle database driver (e.g., `@libsql/client`, `postgres`, `@electric-sql/pglite`).
+
+## Exports
+
+```typescript
+import { createDrizzle, DrizzleError } from 'ff-effect/for/drizzle';
+```
+
+## createDrizzle
+
+Create an Effect-based Drizzle client wrapper.
+
+### Signature
+
+```typescript
+function createDrizzle<
+  TClient extends AnyDrizzleClient,
+  E,
+  R,
+  T extends string = '@ff-effect/Drizzle'
+>(
+  createClient: Effect.Effect<TClient, E, R>,
+  opts?: { tagId?: T }
+): {
+  db: <T>(fn: (client: Client) => Promise<T>) => Effect.Effect<T, DrizzleError, Drizzle>;
+  tx: <T>(fn: (client: Tx) => Promise<T>) => Effect.Effect<T, DrizzleError, DrizzleTx>;
+  Drizzle: Context.Tag<Drizzle, Client>;
+  DrizzleTx: Context.Tag<DrizzleTx, Tx>;
+  withTransaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E | DrizzleError, Exclude<R, DrizzleTx>>;
+  layer: Layer<Drizzle, E, R>;
+}
+```
+
+### Parameters
+
+<ParamField path="createClient" type="Effect.Effect<TClient, E, R>" required>
+  An Effect that yields a Drizzle client instance. This can include any setup logic, connection pooling, etc.
+</ParamField>
+
+<ParamField path="opts.tagId" type="string">
+  Optional custom tag identifier. Useful when working with multiple databases. Defaults to `'@ff-effect/Drizzle'`.
+</ParamField>
+
+### Returns
+
+Returns an object with:
+
+<ResponseField name="db" type="function">
+  Execute database operations using the main client or transaction client (if inside `withTransaction`).
+</ResponseField>
+
+<ResponseField name="tx" type="function">
+  Execute operations that require being inside a transaction. Type-safe - only works within `withTransaction`.
+</ResponseField>
+
+<ResponseField name="Drizzle" type="Context.Tag">
+  Context tag for the database client. Use this to access the raw client if needed.
+</ResponseField>
+
+<ResponseField name="DrizzleTx" type="Context.Tag">
+  Context tag for transaction clients. Only available inside `withTransaction`.
+</ResponseField>
+
+<ResponseField name="withTransaction" type="function">
+  Execute an Effect within a database transaction. Automatically rolls back on errors.
+</ResponseField>
+
+<ResponseField name="layer" type="Layer">
+  Layer that provides the database client to Effects.
+</ResponseField>
+
+## Basic Usage
+
+### Setup
+
+```typescript
+import { createDrizzle } from 'ff-effect/for/drizzle';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { Effect } from 'effect';
+import postgres from 'postgres';
+
+const sql = postgres(process.env.DATABASE_URL);
+const db = drizzle(sql);
+
+const Database = createDrizzle(
+  Effect.succeed(db)
+);
+```
+
+### Simple Queries
+
+```typescript
+import { Effect } from 'effect';
+import { users } from './schema';
+
+const program = Effect.gen(function* () {
+  // Select all users
+  const allUsers = yield* Database.db((db) => 
+    db.select().from(users)
+  );
+  
+  // Insert a user
+  yield* Database.db((db) =>
+    db.insert(users).values({ name: 'Alice', email: 'alice@example.com' })
+  );
+  
+  // Update users
+  yield* Database.db((db) =>
+    db.update(users)
+      .set({ name: 'Alice Updated' })
+      .where(eq(users.email, 'alice@example.com'))
+  );
+  
+  return allUsers;
+}).pipe(Effect.provide(Database.layer));
+```
+
+## Transactions
+
+Use `withTransaction` to execute multiple operations atomically.
+
+### Basic Transaction
+
+```typescript
+import { Effect } from 'effect';
+import { users, accounts } from './schema';
+
+const program = Effect.gen(function* () {
+  const result = yield* Database.withTransaction(
+    Effect.gen(function* () {
+      // Both operations run in the same transaction
+      const [user] = yield* Database.db((db) =>
+        db.insert(users)
+          .values({ name: 'Bob', email: 'bob@example.com' })
+          .returning()
+      );
+      
+      yield* Database.db((db) =>
+        db.insert(accounts)
+          .values({ userId: user.id, balance: 100 })
+      );
+      
+      return user;
+    })
+  );
+  
+  return result;
+}).pipe(Effect.provide(Database.layer));
+```
+
+### Automatic Rollback
+
+Transactions automatically roll back on errors:
+
+```typescript
+const program = Effect.gen(function* () {
+  const result = yield* Database.withTransaction(
+    Effect.gen(function* () {
+      yield* Database.db((db) =>
+        db.insert(users).values({ name: 'Charlie', email: 'charlie@example.com' })
+      );
+      
+      // This will cause a rollback
+      yield* Effect.fail(new Error('Something went wrong'));
+      
+      // This never executes, and the user insert is rolled back
+      yield* Database.db((db) =>
+        db.insert(accounts).values({ userId: 1, balance: 100 })
+      );
+    })
+  ).pipe(Effect.either);
+  
+  // result._tag === 'Left'
+  // Database remains unchanged
+  return result;
+}).pipe(Effect.provide(Database.layer));
+```
+
+### Transaction-Only Operations with `tx`
+
+Use `tx` for operations that must run inside a transaction (enforced at compile-time):
+
+```typescript
+const program = Effect.gen(function* () {
+  const result = yield* Database.withTransaction(
+    Effect.gen(function* () {
+      // tx is type-safe - only available inside withTransaction
+      const [user] = yield* Database.tx((tx) =>
+        tx.insert(users)
+          .values({ name: 'Dave', email: 'dave@example.com' })
+          .returning()
+      );
+      
+      // You can mix db and tx calls
+      yield* Database.db((db) =>
+        db.insert(accounts).values({ userId: user.id, balance: 50 })
+      );
+      
+      return user;
+    })
+  );
+  
+  return result;
+}).pipe(Effect.provide(Database.layer));
+
+// This won't compile - tx requires DrizzleTx context
+const invalid = Database.tx((tx) => tx.select().from(users));
+// Error: Missing DrizzleTx requirement
+```
+
+## Multiple Databases
+
+Use custom `tagId` to work with multiple databases:
+
+```typescript
+import { createDrizzle } from 'ff-effect/for/drizzle';
+import { Effect } from 'effect';
+
+// Primary database
+const MainDb = createDrizzle(
+  Effect.succeed(drizzle(mainConnection))
+);
+
+// Analytics database with custom tag
+const AnalyticsDb = createDrizzle(
+  Effect.succeed(drizzle(analyticsConnection)),
+  { tagId: 'AnalyticsDb' }
+);
+
+const program = Effect.gen(function* () {
+  // Use both databases
+  const users = yield* MainDb.db((db) => db.select().from(usersTable));
+  
+  yield* AnalyticsDb.db((db) =>
+    db.insert(eventsTable).values({ event: 'users_fetched', count: users.length })
+  );
+  
+  return users;
+}).pipe(
+  Effect.provide(MainDb.layer),
+  Effect.provide(AnalyticsDb.layer)
+);
+```
+
+## Error Handling
+
+### DrizzleError
+
+All database operations can fail with `DrizzleError`:
+
+```typescript
+import { DrizzleError } from 'ff-effect/for/drizzle';
+import { Effect } from 'effect';
+
+const program = Effect.gen(function* () {
+  const users = yield* Database.db((db) =>
+    db.select().from(usersTable)
+  ).pipe(
+    Effect.catchTag('ff-effect/DrizzleError', (error) =>
+      Effect.gen(function* () {
+        console.error('Database error:', error.message);
+        console.error('Cause:', error.cause);
+        // Provide fallback
+        return [];
+      })
+    )
+  );
+  
+  return users;
+}).pipe(Effect.provide(Database.layer));
+```
+
+### Transaction Errors
+
+Transaction errors preserve the original error type:
+
+```typescript
+class ValidationError extends Data.TaggedError('ValidationError')<{
+  field: string;
+}> {}
+
+const program = Effect.gen(function* () {
+  const result = yield* Database.withTransaction(
+    Effect.gen(function* () {
+      yield* Database.db((db) =>
+        db.insert(users).values({ name: 'Eve', email: 'eve@example.com' })
+      );
+      
+      // Custom error - will cause rollback
+      yield* Effect.fail(new ValidationError({ field: 'email' }));
+    })
+  ).pipe(
+    Effect.catchTags({
+      'ValidationError': (error) =>
+        Effect.sync(() => console.log(`Validation failed: ${error.field}`)),
+      'ff-effect/DrizzleError': (error) =>
+        Effect.sync(() => console.log(`Database failed: ${error.message}`))
+    })
+  );
+  
+  return result;
+}).pipe(Effect.provide(Database.layer));
+```
+
+## Real-World Example
+
+```typescript
+import { createDrizzle } from 'ff-effect/for/drizzle';
+import { drizzle } from 'drizzle-orm/libsql';
+import { createClient } from '@libsql/client';
+import { Effect, Layer } from 'effect';
+import { users, posts, comments } from './schema';
+
+// Setup
+const Database = createDrizzle(
+  Effect.sync(() => {
+    const client = createClient({
+      url: process.env.DATABASE_URL!,
+      authToken: process.env.DATABASE_AUTH_TOKEN
+    });
+    return drizzle(client);
+  })
+);
+
+// Service using database
+class PostService extends Effect.Service<PostService>()('PostService', {
+  dependencies: [Database.layer],
+  effect: Effect.gen(function* () {
+    return {
+      createPostWithComments: (data: {
+        title: string;
+        content: string;
+        comments: string[];
+      }) =>
+        Database.withTransaction(
+          Effect.gen(function* () {
+            // Insert post
+            const [post] = yield* Database.db((db) =>
+              db.insert(posts)
+                .values({ title: data.title, content: data.content })
+                .returning()
+            );
+            
+            // Insert comments
+            if (data.comments.length > 0) {
+              yield* Database.db((db) =>
+                db.insert(comments).values(
+                  data.comments.map((text) => ({
+                    postId: post.id,
+                    text
+                  }))
+                )
+              );
+            }
+            
+            return post;
+          })
+        ),
+      
+      getPostWithComments: (postId: number) =>
+        Effect.gen(function* () {
+          const [post] = yield* Database.db((db) =>
+            db.select().from(posts).where(eq(posts.id, postId))
+          );
+          
+          const postComments = yield* Database.db((db) =>
+            db.select().from(comments).where(eq(comments.postId, postId))
+          );
+          
+          return { ...post, comments: postComments };
+        })
+    };
+  })
+}) {}
+
+// Usage
+const program = Effect.gen(function* () {
+  const postService = yield* PostService;
+  
+  const post = yield* postService.createPostWithComments({
+    title: 'Hello Effect!',
+    content: 'This is my first post.',
+    comments: ['Great post!', 'Thanks for sharing!']
+  });
+  
+  const fullPost = yield* postService.getPostWithComments(post.id);
+  return fullPost;
+}).pipe(Effect.provide(PostService.Default));
+```
+
+## Type Exports
+
+<Note>
+The integration exports various Effect internal type IDs to avoid TypeScript declaration file generation issues. You don't need to use these directly.
+</Note>
+
+```typescript
+import {
+  TagTypeId,
+  ChannelTypeId,
+  EffectTypeId,
+  NodeInspectSymbol,
+  STMTypeId,
+  SinkTypeId,
+  StreamTypeId,
+  Unify
+} from 'ff-effect/for/drizzle';
+```
+
+## See Also
+
+- [Drizzle ORM Documentation](https://orm.drizzle.team/docs/overview)
+- [extract](/ff-effect/extract) - Used internally for transaction support
+- [Examples](/ff-effect/examples) - More complex usage patterns

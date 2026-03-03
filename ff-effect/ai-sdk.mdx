@@ -1,0 +1,458 @@
+---
+title: AI SDK Integration
+description: Effect wrappers for Vercel AI SDK with automatic callback bridging
+---
+
+## Overview
+
+The AI SDK integration provides Effect-first wrappers for [Vercel AI SDK](https://sdk.vercel.ai/docs) functions. All callbacks are automatically bridged to support Effect-based handlers, allowing you to use services and structured concurrency within AI SDK operations.
+
+## Installation
+
+```bash
+bun add ff-effect effect ai
+```
+
+## Exports
+
+```typescript
+import {
+  generateText,
+  streamText,
+  tool,
+  effectSchema,
+  describe,
+  AiError
+} from 'ff-effect/for/ai';
+```
+
+## generateText
+
+Generate text using a language model with Effect-based callbacks.
+
+### Signature
+
+```typescript
+function generateText<R = never>(
+  params: GenerateTextParams<R>
+): Effect.Effect<GenerateTextReturn, AiError, R>
+```
+
+### Parameters
+
+<ParamField path="params" type="GenerateTextParams<R>" required>
+  Configuration object matching AI SDK's `generateText` parameters, but with callbacks accepting Effects instead of Promises.
+
+  **Effectified Callbacks:**
+  - `onStepFinish?: (step) => Effect.Effect<void, never, R>`
+  - `onFinish?: (result) => Effect.Effect<void, never, R>`
+  - `experimental_onStart?: () => Effect.Effect<void, never, R>`
+  - `experimental_onStepStart?: (step) => Effect.Effect<void, never, R>`
+  - `experimental_onToolCallStart?: (call) => Effect.Effect<void, never, R>`
+  - `experimental_onToolCallFinish?: (result) => Effect.Effect<void, never, R>`
+
+  All other parameters match the [AI SDK generateText API](https://sdk.vercel.ai/docs/reference/ai-sdk-core/generate-text).
+</ParamField>
+
+### Returns
+
+Returns an `Effect` that yields the same result type as AI SDK's `generateText`:
+
+```typescript
+Effect.Effect<
+  {
+    text: string;
+    finishReason: 'stop' | 'length' | 'content-filter' | 'error' | 'other';
+    usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+    // ... other AI SDK return fields
+  },
+  AiError,
+  R
+>
+```
+
+### Example
+
+```typescript
+import { generateText } from 'ff-effect/for/ai';
+import { openai } from '@ai-sdk/openai';
+import { Effect } from 'effect';
+
+class Logger extends Effect.Service<Logger>()('Logger', {
+  effect: Effect.succeed({
+    info: (msg: string) => Effect.sync(() => console.log(msg))
+  })
+}) {}
+
+const program = Effect.gen(function* () {
+  const logger = yield* Logger;
+  
+  const result = yield* generateText({
+    model: openai('gpt-4'),
+    prompt: 'What is the meaning of life?',
+    onFinish: ({ text, usage }) =>
+      Effect.gen(function* () {
+        yield* logger.info(`Generated: ${text}`);
+        yield* logger.info(`Tokens: ${usage.totalTokens}`);
+      })
+  });
+  
+  return result.text;
+}).pipe(Effect.provide(Logger.Default));
+```
+
+## streamText
+
+Stream text generation with Effect-based callbacks.
+
+### Signature
+
+```typescript
+function streamText<R = never>(
+  params: StreamTextParams<R>
+): Effect.Effect<StreamTextReturn, AiError, R | Scope.Scope>
+```
+
+### Parameters
+
+<ParamField path="params" type="StreamTextParams<R>" required>
+  Configuration object matching AI SDK's `streamText` parameters, with effectified callbacks:
+
+  **Effectified Callbacks:**
+  - `onChunk?: (chunk) => Effect.Effect<void, never, R>`
+  - `onError?: (error) => Effect.Effect<void, never, R>`
+  - `onFinish?: (result) => Effect.Effect<void, never, R>`
+  - `onAbort?: () => Effect.Effect<void, never, R>`
+  - `onStepFinish?: (step) => Effect.Effect<void, never, R>`
+  - Plus all experimental callbacks from `generateText`
+
+  All other parameters match the [AI SDK streamText API](https://sdk.vercel.ai/docs/reference/ai-sdk-core/stream-text).
+</ParamField>
+
+### Returns
+
+Returns an `Effect` that yields AI SDK's stream text result object. Requires `Scope` for proper cleanup.
+
+<Warning>
+Always use `Effect.scoped` when calling `streamText` to ensure proper resource cleanup.
+</Warning>
+
+### Example
+
+```typescript
+import { streamText } from 'ff-effect/for/ai';
+import { openai } from '@ai-sdk/openai';
+import { Effect } from 'effect';
+
+class Metrics extends Effect.Service<Metrics>()('Metrics', {
+  effect: Effect.succeed({
+    recordChunk: (chunk: string) => Effect.sync(() => {
+      // Track streaming metrics
+    })
+  })
+}) {}
+
+const program = Effect.gen(function* () {
+  const metrics = yield* Metrics;
+  
+  const stream = yield* streamText({
+    model: openai('gpt-4'),
+    prompt: 'Write a story about a robot',
+    onChunk: ({ chunk }) =>
+      Effect.gen(function* () {
+        yield* metrics.recordChunk(chunk.text);
+      })
+  });
+  
+  // Use the stream
+  for await (const chunk of stream.textStream) {
+    console.log(chunk);
+  }
+}).pipe(
+  Effect.scoped,  // Required for proper cleanup
+  Effect.provide(Metrics.Default)
+);
+```
+
+## tool
+
+Create AI SDK tools with Effect-based execute handlers.
+
+### Signature
+
+```typescript
+function tool<INPUT, OUTPUT, R = never>(
+  params: EffectToolDef<INPUT, OUTPUT, R>
+): Effect.Effect<Ai.Tool<INPUT, OUTPUT>, never, R | Scope.Scope>
+```
+
+### Parameters
+
+<ParamField path="params" type="EffectToolDef<INPUT, OUTPUT, R>" required>
+  Tool definition object with effectified callbacks:
+
+  <ParamField path="params.description" type="string" required>
+    Human-readable description of what the tool does.
+  </ParamField>
+
+  <ParamField path="params.inputSchema" type="Schema<INPUT>" required>
+    Schema for tool input validation (Zod, Valibot, or Effect schema).
+  </ParamField>
+
+  <ParamField path="params.execute" type="(input: INPUT, options: ToolExecutionOptions) => Effect.Effect<OUTPUT, unknown, R>">
+    Effect-based execution function. Can access Effect services.
+  </ParamField>
+
+  <ParamField path="params.onInputStart" type="(options: ToolExecutionOptions) => Effect.Effect<void, never, R>">
+    Called when input parsing starts.
+  </ParamField>
+
+  <ParamField path="params.onInputDelta" type="(options: { inputTextDelta: string } & ToolExecutionOptions) => Effect.Effect<void, never, R>">
+    Called for each input text delta during streaming.
+  </ParamField>
+
+  <ParamField path="params.onInputAvailable" type="(options: { input: INPUT } & ToolExecutionOptions) => Effect.Effect<void, never, R>">
+    Called when full input is available.
+  </ParamField>
+
+  <ParamField path="params.toModelOutput" type="(options: { toolCallId: string; input: INPUT; output: OUTPUT }) => Effect.Effect<ToolModelOutput, never, R>">
+    Custom output formatter for the model.
+  </ParamField>
+</ParamField>
+
+### Returns
+
+Returns an `Effect` that yields an AI SDK `Tool` object. Requires `Scope`.
+
+### Example: Simple Tool
+
+```typescript
+import { tool, effectSchema, describe } from 'ff-effect/for/ai';
+import { generateText } from 'ff-effect/for/ai';
+import { openai } from '@ai-sdk/openai';
+import { Schema, Effect } from 'effect';
+
+const weatherTool = yield* tool({
+  description: 'Get weather for a city',
+  inputSchema: effectSchema(
+    Schema.Struct({
+      city: Schema.String.pipe(describe('City name'))
+    })
+  ),
+  execute: ({ city }) => Effect.succeed(`Weather in ${city}: Sunny, 72°F`)
+});
+
+const result = yield* generateText({
+  model: openai('gpt-4'),
+  prompt: 'What\'s the weather in San Francisco?',
+  tools: { weather: weatherTool }
+});
+```
+
+### Example: Tool with Services
+
+```typescript
+import { tool, effectSchema } from 'ff-effect/for/ai';
+import { Schema, Effect } from 'effect';
+
+class WeatherService extends Effect.Service<WeatherService>()("WeatherService", {
+  effect: Effect.succeed({
+    getWeather: (city: string) => 
+      Effect.tryPromise(() => 
+        fetch(`https://api.weather.com/${city}`).then(r => r.json())
+      )
+  })
+}) {}
+
+const program = Effect.gen(function* () {
+  const weatherTool = yield* tool({
+    description: 'Get real weather data',
+    inputSchema: effectSchema(
+      Schema.Struct({
+        city: Schema.String
+      })
+    ),
+    execute: ({ city }) =>
+      Effect.gen(function* () {
+        const service = yield* WeatherService;
+        const data = yield* service.getWeather(city);
+        return `Weather in ${city}: ${data.description}, ${data.temp}°F`;
+      })
+  });
+  
+  return weatherTool;
+}).pipe(
+  Effect.scoped,
+  Effect.provide(WeatherService.Default)
+);
+```
+
+## effectSchema
+
+Convert an Effect Schema to an AI SDK schema with automatic validation.
+
+### Signature
+
+```typescript
+function effectSchema<A, I>(
+  schema: Schema.Schema<A, I>
+): FlexibleSchema<A>
+```
+
+### Example
+
+```typescript
+import { effectSchema, describe } from 'ff-effect/for/ai';
+import { Schema } from 'effect';
+
+const userSchema = effectSchema(
+  Schema.Struct({
+    name: Schema.String.pipe(describe('User full name')),
+    age: Schema.Number.pipe(describe('User age in years')),
+    email: Schema.String.pipe(describe('User email address'))
+  })
+);
+
+const result = yield* generateText({
+  model: openai('gpt-4'),
+  prompt: 'Extract user info from: John Doe, 30 years old, john@example.com',
+  output: 'object',
+  schema: userSchema
+});
+
+console.log(result.object); // { name: 'John Doe', age: 30, email: 'john@example.com' }
+```
+
+## describe
+
+Add descriptions to Effect Schema fields for better AI understanding.
+
+### Signature
+
+```typescript
+function describe(
+  description: string
+): <A, I, R>(schema: Schema.Schema<A, I, R>) => Schema.Schema<A, I, R>
+```
+
+### Example
+
+```typescript
+import { describe } from 'ff-effect/for/ai';
+import { Schema } from 'effect';
+
+const PersonSchema = Schema.Struct({
+  name: Schema.String.pipe(
+    describe('Full name of the person')
+  ),
+  age: Schema.Number.pipe(
+    describe('Age in years, must be positive')
+  ),
+  occupation: Schema.optional(
+    Schema.String.pipe(
+      describe('Current job title or profession')
+    )
+  )
+});
+```
+
+## AiError
+
+Tagged error type for AI SDK operation failures.
+
+```typescript
+class AiError extends Data.TaggedError('ff-effect/AiError')<{
+  message: string;
+  cause?: unknown;
+}> {}
+```
+
+### Example Error Handling
+
+```typescript
+import { generateText, AiError } from 'ff-effect/for/ai';
+import { Effect } from 'effect';
+
+const program = Effect.gen(function* () {
+  const result = yield* generateText({
+    model: openai('gpt-4'),
+    prompt: 'Hello!'
+  }).pipe(
+    Effect.catchTag('ff-effect/AiError', (error) =>
+      Effect.gen(function* () {
+        console.error('AI SDK Error:', error.message);
+        console.error('Cause:', error.cause);
+        return yield* Effect.fail(error);
+      })
+    )
+  );
+  
+  return result;
+});
+```
+
+## Complete Example
+
+```typescript
+import { generateText, tool, effectSchema, describe } from 'ff-effect/for/ai';
+import { openai } from '@ai-sdk/openai';
+import { Schema, Effect } from 'effect';
+
+class Database extends Effect.Service<Database>()('Database', {
+  effect: Effect.succeed({
+    getUser: (id: string) => Effect.succeed({ id, name: 'Alice', age: 30 })
+  })
+}) {}
+
+class Logger extends Effect.Service<Logger>()('Logger', {
+  effect: Effect.succeed({
+    info: (msg: string) => Effect.sync(() => console.log(`[INFO] ${msg}`))
+  })
+}) {}
+
+const program = Effect.gen(function* () {
+  const logger = yield* Logger;
+  
+  // Create a tool that uses services
+  const getUserTool = yield* tool({
+    description: 'Get user information by ID',
+    inputSchema: effectSchema(
+      Schema.Struct({
+        userId: Schema.String.pipe(describe('The user ID to look up'))
+      })
+    ),
+    execute: ({ userId }) =>
+      Effect.gen(function* () {
+        const db = yield* Database;
+        const user = yield* db.getUser(userId);
+        yield* logger.info(`Fetched user: ${user.name}`);
+        return `User ${user.name} is ${user.age} years old`;
+      })
+  });
+  
+  // Generate text with the tool
+  const result = yield* generateText({
+    model: openai('gpt-4'),
+    prompt: 'Get information for user ID "123"',
+    tools: { getUser: getUserTool },
+    onFinish: ({ usage }) =>
+      Effect.gen(function* () {
+        yield* logger.info(`Tokens used: ${usage.totalTokens}`);
+      })
+  });
+  
+  return result.text;
+}).pipe(
+  Effect.scoped,
+  Effect.provide(Database.Default),
+  Effect.provide(Logger.Default)
+);
+
+Effect.runPromise(program).then(console.log);
+```
+
+## See Also
+
+- [AI SDK Documentation](https://sdk.vercel.ai/docs)
+- [Effect Schema](https://effect.website/docs/schema/introduction)
+- [extract](/ff-effect/extract) - Used internally for callback handling

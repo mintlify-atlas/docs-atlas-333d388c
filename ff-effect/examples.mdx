@@ -1,0 +1,533 @@
+---
+title: Examples
+description: Real-world usage patterns combining multiple ff-effect features
+---
+
+## Overview
+
+This page demonstrates practical examples that combine multiple integrations and utilities from `ff-effect` to solve real-world problems.
+
+## AI-Powered Order Processing
+
+Combining AI SDK, Drizzle, and Inngest to build an intelligent order processing system.
+
+```typescript
+import { generateText, tool, effectSchema, describe } from 'ff-effect/for/ai';
+import { createDrizzle } from 'ff-effect/for/drizzle';
+import { createInngest } from 'ff-effect/for/inngest';
+import { openai } from '@ai-sdk/openai';
+import { Inngest } from 'inngest';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { Schema, Effect, Duration } from 'effect';
+import postgres from 'postgres';
+
+// Database setup
+const sql = postgres(process.env.DATABASE_URL!);
+const Database = createDrizzle(Effect.succeed(drizzle(sql)));
+
+// Inngest setup
+const InngestClient = createInngest(
+  Effect.succeed(new Inngest({ id: 'order-processor' }))
+);
+
+// Services
+class OrderService extends Effect.Service<OrderService>()('OrderService', {
+  dependencies: [Database.layer],
+  effect: Effect.gen(function* () {
+    return {
+      getOrder: (orderId: string) =>
+        Database.db((db) => db.select().from(orders).where(eq(orders.id, orderId))),
+      
+      updateOrderStatus: (orderId: string, status: string) =>
+        Database.db((db) =>
+          db.update(orders).set({ status }).where(eq(orders.id, orderId))
+        ),
+      
+      analyzeOrder: (orderId: string) =>
+        Effect.gen(function* () {
+          const [order] = yield* Database.db((db) =>
+            db.select().from(orders).where(eq(orders.id, orderId))
+          );
+          
+          // Use AI to analyze order for fraud
+          const result = yield* generateText({
+            model: openai('gpt-4'),
+            prompt: `Analyze this order for potential fraud: ${JSON.stringify(order)}`,
+            output: 'object',
+            schema: effectSchema(
+              Schema.Struct({
+                isFraudulent: Schema.Boolean.pipe(
+                  describe('Whether the order appears fraudulent')
+                ),
+                riskScore: Schema.Number.pipe(
+                  describe('Risk score from 0-100')
+                ),
+                reasons: Schema.Array(Schema.String).pipe(
+                  describe('Reasons for the assessment')
+                )
+              })
+            )
+          });
+          
+          return result.object;
+        })
+    };
+  })
+}) {}
+
+// Background function to process orders
+const program = Effect.gen(function* () {
+  const orderService = yield* OrderService;
+  
+  const processOrderFunction = yield* InngestClient.createFunction(
+    { id: 'process-order' },
+    { event: 'order/created' },
+    ({ event, step }) =>
+      Effect.gen(function* () {
+        const orderId = event.data.orderId;
+        
+        // Step 1: Analyze for fraud
+        const analysis = yield* step.run('analyze-fraud', () =>
+          orderService.analyzeOrder(orderId)
+        );
+        
+        if (analysis.isFraudulent) {
+          yield* step.run('mark-fraudulent', () =>
+            orderService.updateOrderStatus(orderId, 'flagged')
+          );
+          return { status: 'flagged', analysis };
+        }
+        
+        // Step 2: Wait for inventory check
+        yield* step.sleep('inventory-check', Duration.minutes(5));
+        
+        // Step 3: Process payment
+        yield* step.run('process-payment', () =>
+          orderService.updateOrderStatus(orderId, 'processing')
+        );
+        
+        // Step 4: Ship order
+        yield* step.run('ship-order', () =>
+          orderService.updateOrderStatus(orderId, 'shipped')
+        );
+        
+        return { status: 'shipped', analysis };
+      })
+  );
+  
+  return processOrderFunction;
+}).pipe(
+  Effect.scoped,
+  Effect.provide(OrderService.Default),
+  Effect.provide(InngestClient.layer)
+);
+```
+
+## Smart API with oRPC and AI
+
+Building a smart API that uses AI to enhance responses.
+
+```typescript
+import { createHandler } from 'ff-effect/for/orpc';
+import { generateText, effectSchema, describe } from 'ff-effect/for/ai';
+import { createDrizzle } from 'ff-effect/for/drizzle';
+import { openai } from '@ai-sdk/openai';
+import { os, implement } from '@orpc/server';
+import { Schema, Effect } from 'effect';
+import * as v from 'valibot';
+
+// Database
+const Database = createDrizzle(
+  Effect.sync(() => drizzle(createClient(process.env.DATABASE_URL!)))
+);
+
+// Services
+class ContentService extends Effect.Service<ContentService>()('ContentService', {
+  dependencies: [Database.layer],
+  effect: Effect.gen(function* () {
+    return {
+      getArticle: (id: string) =>
+        Database.db((db) => db.select().from(articles).where(eq(articles.id, id))),
+      
+      summarizeArticle: (content: string, targetLength: number) =>
+        Effect.gen(function* () {
+          const result = yield* generateText({
+            model: openai('gpt-4'),
+            prompt: `Summarize this article in approximately ${targetLength} words: ${content}`,
+            output: 'object',
+            schema: effectSchema(
+              Schema.Struct({
+                summary: Schema.String.pipe(
+                  describe('Concise summary of the article')
+                ),
+                keyPoints: Schema.Array(Schema.String).pipe(
+                  describe('3-5 key points from the article')
+                ),
+                wordCount: Schema.Number.pipe(
+                  describe('Actual word count of the summary')
+                )
+              })
+            )
+          });
+          
+          return result.object;
+        }),
+      
+      generateTags: (content: string) =>
+        Effect.gen(function* () {
+          const result = yield* generateText({
+            model: openai('gpt-4'),
+            prompt: `Generate relevant tags for this article: ${content}`,
+            output: 'object',
+            schema: effectSchema(
+              Schema.Struct({
+                tags: Schema.Array(Schema.String).pipe(
+                  describe('5-10 relevant tags')
+                )
+              })
+            )
+          });
+          
+          return result.object.tags;
+        })
+    };
+  })
+}) {}
+
+// API Contract
+const contract = {
+  getArticle: os
+    .input(v.object({ id: v.string(), summarize: v.optional(v.boolean()) }))
+    .output(v.object({
+      id: v.string(),
+      title: v.string(),
+      content: v.string(),
+      summary: v.optional(v.object({
+        text: v.string(),
+        keyPoints: v.array(v.string())
+      })),
+      tags: v.array(v.string())
+    })),
+  
+  enrichArticle: os
+    .input(v.object({ id: v.string() }))
+    .output(v.object({
+      id: v.string(),
+      tags: v.array(v.string()),
+      summary: v.string()
+    }))
+};
+
+const osContract = implement(contract);
+
+// Implementation
+const program = Effect.gen(function* () {
+  const content = yield* ContentService;
+  
+  const getArticle = yield* createHandler(
+    osContract.getArticle,
+    Effect.fn(function* ({ input }) {
+      const [article] = yield* content.getArticle(input.id);
+      
+      let summary = undefined;
+      if (input.summarize) {
+        const summaryData = yield* content.summarizeArticle(article.content, 100);
+        summary = {
+          text: summaryData.summary,
+          keyPoints: summaryData.keyPoints
+        };
+      }
+      
+      const tags = yield* content.generateTags(article.content);
+      
+      return {
+        id: article.id,
+        title: article.title,
+        content: article.content,
+        summary,
+        tags
+      };
+    })
+  );
+  
+  const enrichArticle = yield* createHandler(
+    osContract.enrichArticle,
+    Effect.fn(function* ({ input }) {
+      const [article] = yield* content.getArticle(input.id);
+      
+      // Run AI tasks in parallel
+      const [tags, summaryData] = yield* Effect.all([
+        content.generateTags(article.content),
+        content.summarizeArticle(article.content, 50)
+      ], { concurrency: 2 });
+      
+      // Save to database in transaction
+      yield* Database.withTransaction(
+        Effect.gen(function* () {
+          yield* Database.db((db) =>
+            db.update(articles)
+              .set({ tags: tags.join(','), summary: summaryData.summary })
+              .where(eq(articles.id, input.id))
+          );
+        })
+      );
+      
+      return {
+        id: article.id,
+        tags,
+        summary: summaryData.summary
+      };
+    })
+  );
+  
+  return { getArticle, enrichArticle };
+}).pipe(
+  Effect.provide(ContentService.Default)
+);
+```
+
+## Multi-Database Transaction System
+
+Coordinating operations across multiple databases.
+
+```typescript
+import { createDrizzle } from 'ff-effect/for/drizzle';
+import { createInngest } from 'ff-effect/for/inngest';
+import { Effect, Data } from 'effect';
+
+// Two separate databases
+const MainDb = createDrizzle(
+  Effect.sync(() => drizzle(mainConnection))
+);
+
+const AnalyticsDb = createDrizzle(
+  Effect.sync(() => drizzle(analyticsConnection)),
+  { tagId: 'AnalyticsDb' }
+);
+
+const InngestClient = createInngest(
+  Effect.succeed(new Inngest({ id: 'multi-db-app' }))
+);
+
+class TransactionError extends Data.TaggedError('TransactionError')<{
+  operation: string;
+  cause: unknown;
+}> {}
+
+// Service that coordinates across databases
+class TransactionService extends Effect.Service<TransactionService>()('TransactionService', {
+  dependencies: [MainDb.layer, AnalyticsDb.layer],
+  effect: Effect.gen(function* () {
+    return {
+      transferFunds: (fromUserId: string, toUserId: string, amount: number) =>
+        Effect.gen(function* () {
+          // Main database transaction
+          const result = yield* MainDb.withTransaction(
+            Effect.gen(function* () {
+              // Debit from user
+              const [fromBalance] = yield* MainDb.db((db) =>
+                db.select({ balance: accounts.balance })
+                  .from(accounts)
+                  .where(eq(accounts.userId, fromUserId))
+              );
+              
+              if (fromBalance.balance < amount) {
+                return yield* Effect.fail(
+                  new TransactionError({
+                    operation: 'debit',
+                    cause: 'Insufficient funds'
+                  })
+                );
+              }
+              
+              yield* MainDb.tx((tx) =>
+                tx.update(accounts)
+                  .set({ balance: fromBalance.balance - amount })
+                  .where(eq(accounts.userId, fromUserId))
+              );
+              
+              // Credit to user
+              yield* MainDb.tx((tx) =>
+                tx.update(accounts)
+                  .set({ balance: sql`${accounts.balance} + ${amount}` })
+                  .where(eq(accounts.userId, toUserId))
+              );
+              
+              // Record transaction
+              const [transaction] = yield* MainDb.tx((tx) =>
+                tx.insert(transactions)
+                  .values({
+                    fromUserId,
+                    toUserId,
+                    amount,
+                    timestamp: new Date()
+                  })
+                  .returning()
+              );
+              
+              return transaction;
+            })
+          );
+          
+          // Log to analytics database (separate transaction)
+          yield* AnalyticsDb.withTransaction(
+            Effect.gen(function* () {
+              yield* AnalyticsDb.db((db) =>
+                db.insert(transactionEvents).values({
+                  transactionId: result.id,
+                  type: 'transfer',
+                  amount,
+                  timestamp: new Date()
+                })
+              );
+            })
+          ).pipe(
+            Effect.catchAll((error) =>
+              // Don't fail main operation if analytics fails
+              Effect.sync(() => console.error('Analytics logging failed:', error))
+            )
+          );
+          
+          return result;
+        })
+    };
+  })
+}) {}
+
+// Background function for batch processing
+const program = Effect.gen(function* () {
+  const txService = yield* TransactionService;
+  
+  const batchTransferFunction = yield* InngestClient.createFunction(
+    { id: 'batch-transfer' },
+    { event: 'transfer/batch' },
+    ({ event, step }) =>
+      Effect.gen(function* () {
+        const transfers = event.data.transfers;
+        const results = [];
+        
+        for (const transfer of transfers) {
+          const result = yield* step.run(`transfer-${transfer.id}`, () =>
+            txService.transferFunds(
+              transfer.fromUserId,
+              transfer.toUserId,
+              transfer.amount
+            ).pipe(
+              Effect.catchTag('TransactionError', (error) =>
+                Effect.succeed({
+                  id: transfer.id,
+                  status: 'failed',
+                  error: error.operation
+                })
+              )
+            )
+          );
+          
+          results.push(result);
+        }
+        
+        return { processed: results.length, results };
+      })
+  );
+  
+  return batchTransferFunction;
+}).pipe(
+  Effect.scoped,
+  Effect.provide(TransactionService.Default),
+  Effect.provide(InngestClient.layer)
+);
+```
+
+## AI Tool with Database Access
+
+Creating an AI SDK tool that queries a database.
+
+```typescript
+import { tool, generateText, effectSchema, describe } from 'ff-effect/for/ai';
+import { createDrizzle } from 'ff-effect/for/drizzle';
+import { openai } from '@ai-sdk/openai';
+import { Schema, Effect } from 'effect';
+
+const Database = createDrizzle(
+  Effect.sync(() => drizzle(connection))
+);
+
+class SearchService extends Effect.Service<SearchService>()('SearchService', {
+  dependencies: [Database.layer],
+  effect: Effect.gen(function* () {
+    return {
+      searchProducts: (query: string) =>
+        Database.db((db) =>
+          db.select()
+            .from(products)
+            .where(sql`to_tsvector('english', ${products.name} || ' ' || ${products.description}) @@ plainto_tsquery('english', ${query})`)
+            .limit(5)
+        ),
+      
+      getProductDetails: (id: string) =>
+        Database.db((db) =>
+          db.select().from(products).where(eq(products.id, id))
+        )
+    };
+  })
+}) {}
+
+const program = Effect.gen(function* () {
+  const search = yield* SearchService;
+  
+  // Create tools that access database
+  const searchTool = yield* tool({
+    description: 'Search for products in the catalog',
+    inputSchema: effectSchema(
+      Schema.Struct({
+        query: Schema.String.pipe(
+          describe('Search query for finding products')
+        )
+      })
+    ),
+    execute: ({ query }) =>
+      Effect.gen(function* () {
+        const products = yield* search.searchProducts(query);
+        return JSON.stringify(products);
+      })
+  });
+  
+  const detailsTool = yield* tool({
+    description: 'Get detailed information about a specific product',
+    inputSchema: effectSchema(
+      Schema.Struct({
+        productId: Schema.String.pipe(
+          describe('Product ID to get details for')
+        )
+      })
+    ),
+    execute: ({ productId }) =>
+      Effect.gen(function* () {
+        const [product] = yield* search.getProductDetails(productId);
+        return JSON.stringify(product);
+      })
+  });
+  
+  // Use tools in chat
+  const result = yield* generateText({
+    model: openai('gpt-4'),
+    prompt: 'Find me wireless headphones under $100 and tell me about the best option',
+    tools: {
+      search: searchTool,
+      details: detailsTool
+    }
+  });
+  
+  return result.text;
+}).pipe(
+  Effect.scoped,
+  Effect.provide(SearchService.Default)
+);
+```
+
+## See Also
+
+- [AI SDK Integration](/ff-effect/ai-sdk)
+- [Drizzle Integration](/ff-effect/drizzle)
+- [Inngest Integration](/ff-effect/inngest)
+- [oRPC Integration](/ff-effect/orpc)

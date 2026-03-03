@@ -1,0 +1,151 @@
+---
+title: Basic Server
+description: Create simple HTTP handlers with basicHandler
+---
+
+`basicHandler` creates path-based HTTP handlers that can return responses synchronously or as Effect computations.
+
+## Usage
+
+```typescript
+import { basicHandler } from 'ff-serv'
+import { Effect } from 'effect'
+
+const handler = basicHandler('/health', () => {
+  return new Response('OK')
+})
+```
+
+## Path Matching
+
+Paths can be defined as strings or custom matcher functions:
+
+### String Paths
+
+```typescript
+basicHandler('/api/users', (request) => {
+  return new Response('User list')
+})
+```
+
+Path matching is exact - `/api/users` will **not** match `/api/users/123`.
+
+### Custom Matcher Function
+
+```typescript
+basicHandler(
+  (url) => url.pathname.startsWith('/api/'),
+  (request) => {
+    return new Response('API endpoint')
+  }
+)
+```
+
+## Handler Functions
+
+### Synchronous Response
+
+Return a `Response` directly:
+
+```typescript
+basicHandler('/ping', () => {
+  return new Response('pong')
+})
+```
+
+### Effect-based Response
+
+Return an `Effect` for async operations or context requirements:
+
+```typescript
+import { HttpClient } from '@effect/platform'
+
+basicHandler('/proxy', (request) =>
+  Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient
+    const response = yield* client.get('https://api.example.com/data')
+    return new Response(yield* response.text)
+  })
+)
+```
+
+## Type Signatures
+
+```typescript
+// Synchronous handler (no requirements)
+function basicHandler(
+  path: `/${string}` | ((url: URL) => boolean),
+  fn: (request: Request) => Response
+): Handler<'basicHandler', never>
+
+// Effect handler (with requirements R)
+function basicHandler<R>(
+  path: `/${string}` | ((url: URL) => boolean),
+  fn: (request: Request) => Effect.Effect<Response, unknown, R>
+): Handler<'basicHandler', R>
+```
+
+## Complete Example
+
+```typescript
+import { createFetchHandler, basicHandler } from 'ff-serv'
+import { Effect, Context } from 'effect'
+
+// Define a service
+class Database extends Context.Tag('Database')<
+  Database,
+  { query: (sql: string) => Effect.Effect<unknown[]> }
+>() {}
+
+const program = Effect.gen(function* () {
+  const fetch = yield* createFetchHandler([
+    // Simple sync handler
+    basicHandler('/health', () => new Response('OK')),
+
+    // Handler with URL matcher
+    basicHandler(
+      (url) => url.pathname.startsWith('/api/'),
+      () => new Response('API route')
+    ),
+
+    // Handler requiring Database service
+    basicHandler('/users', () =>
+      Effect.gen(function* () {
+        const db = yield* Database
+        const users = yield* db.query('SELECT * FROM users')
+        return Response.json(users)
+      })
+    ),
+  ])
+
+  Bun.serve({ port: 3000, fetch })
+})
+
+// Provide the Database service
+Effect.runPromise(
+  program.pipe(
+    Effect.provideService(Database, {
+      query: (sql) => Effect.succeed([]),
+    })
+  )
+)
+```
+
+## Request Access
+
+The handler function receives the incoming `Request` object:
+
+```typescript
+basicHandler('/echo', async (request) => {
+  const body = await request.text()
+  return new Response(body)
+})
+```
+
+<Note>
+  When using Effect-based handlers, you can return `Promise<Response>` directly without wrapping in `Effect.tryPromise` - the framework handles this automatically.
+</Note>
+
+## Error Handling
+
+Errors in handlers are caught automatically by `createFetchHandler` and return a 500 response. See [Fetch Handler](/ff-serv/fetch-handler#error-handling) for details.

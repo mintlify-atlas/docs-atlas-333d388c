@@ -1,0 +1,503 @@
+---
+title: 'Drizzle Provider'
+description: 'PostgreSQL-backed conversation storage using Drizzle ORM'
+icon: 'database'
+---
+
+## Overview
+
+The Drizzle provider is a production-ready implementation of the `ConversationStore` interface using PostgreSQL and [Drizzle ORM](https://orm.drizzle.team/).
+
+## Installation
+
+Install the required dependencies:
+
+```bash
+bun add ff-ai drizzle-orm postgres
+```
+
+## Database Schema
+
+The provider uses two tables in the `ff_ai` schema:
+
+### threads Table
+
+Stores conversation threads:
+
+```typescript
+export const threads = schema.table(
+  'threads',
+  {
+    id: bigserial({ mode: 'number' }).primaryKey(),        // Internal PK
+    publicId: text().notNull(),                            // Your threadId
+    resourceId: text().notNull(),                          // Your resourceId
+    createdAt: timestamp().defaultNow().notNull(),
+    updatedAt: timestamp().defaultNow().notNull(),
+  },
+  (table) => ({
+    uniqueResourcePublicId: unique().on(table.resourceId, table.publicId),
+  }),
+);
+```
+
+<ParamField path="id" type="bigserial">
+  Internal primary key (auto-incrementing)
+</ParamField>
+
+<ParamField path="publicId" type="text">
+  Your application's thread identifier (from `ThreadIdentifier.threadId`)
+</ParamField>
+
+<ParamField path="resourceId" type="text">
+  Your application's resource identifier (from `ThreadIdentifier.resourceId`)
+</ParamField>
+
+<ParamField path="createdAt" type="timestamp">
+  When the thread was first created
+</ParamField>
+
+<ParamField path="updatedAt" type="timestamp">
+  When the thread was last updated (any message activity)
+</ParamField>
+
+### messages Table
+
+Stores individual messages:
+
+```typescript
+export const messages = schema.table('messages', {
+  id: bigserial({ mode: 'number' }).primaryKey(),         // Internal PK
+  uuid: uuid().notNull().unique(),                        // Message ID
+  threadId: bigint({ mode: 'number' })
+    .references(() => threads.id, { onDelete: 'cascade' })
+    .notNull(),
+  aiSdkV5: jsonb().$type<Ai.ModelMessage>(),             // Message content
+  createdAt: timestamp().defaultNow().notNull(),
+});
+```
+
+<ParamField path="id" type="bigserial">
+  Internal primary key for efficient querying
+</ParamField>
+
+<ParamField path="uuid" type="uuid">
+  The message's public UUID (from `ConversationMessage.id`)
+</ParamField>
+
+<ParamField path="threadId" type="bigint">
+  Foreign key to threads table (cascading delete)
+</ParamField>
+
+<ParamField path="aiSdkV5" type="jsonb">
+  The complete AI SDK `ModelMessage` object (role, content, etc.)
+</ParamField>
+
+<ParamField path="createdAt" type="timestamp">
+  When the message was created
+</ParamField>
+
+## Setup
+
+### 1. Create the Database Schema
+
+Generate and run migrations:
+
+```bash
+# Generate migration
+bun drizzle-kit generate
+
+# Run migration
+bun drizzle-kit migrate
+```
+
+Or create the schema manually:
+
+```sql
+CREATE SCHEMA IF NOT EXISTS ff_ai;
+
+CREATE TABLE ff_ai.threads (
+  id BIGSERIAL PRIMARY KEY,
+  public_id TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+  updated_at TIMESTAMP DEFAULT NOW() NOT NULL,
+  UNIQUE(resource_id, public_id)
+);
+
+CREATE TABLE ff_ai.messages (
+  id BIGSERIAL PRIMARY KEY,
+  uuid UUID NOT NULL UNIQUE,
+  thread_id BIGINT NOT NULL REFERENCES ff_ai.threads(id) ON DELETE CASCADE,
+  ai_sdk_v5 JSONB,
+  created_at TIMESTAMP DEFAULT NOW() NOT NULL
+);
+
+CREATE INDEX idx_messages_thread_id ON ff_ai.messages(thread_id);
+CREATE INDEX idx_messages_created_at ON ff_ai.messages(created_at);
+```
+
+### 2. Configure the Provider
+
+```typescript
+import { createDrizzleStoreLayer } from 'ff-ai/providers/drizzle';
+import postgres from 'postgres';
+
+const sql = postgres(process.env.DATABASE_URL!);
+
+const storeLayer = createDrizzleStoreLayer(sql, {
+  store: {
+    casing: 'snake_case'  // Match your database naming convention
+  }
+});
+```
+
+### 3. Use in Your Application
+
+```typescript
+import { createTurnHandler } from 'ff-ai';
+import { Effect } from 'effect';
+
+const program = Effect.gen(function* () {
+  const handler = yield* createTurnHandler({
+    identifier: {
+      resourceId: 'user-123',
+      threadId: 'conversation-456'
+    }
+  });
+
+  // Use handler...
+}).pipe(
+  Effect.provide(storeLayer),
+  Effect.runPromise
+);
+```
+
+## API Reference
+
+### createDrizzleStoreLayer
+
+Create a Layer that provides the ConversationStore service.
+
+```typescript
+function createDrizzleStoreLayer(
+  conn: postgres.Sql,
+  opts?: {
+    store?: {
+      casing?: 'snake_case' | 'camelCase'
+    }
+  }
+): Layer<ConversationStore>
+```
+
+<ParamField path="conn" type="postgres.Sql" required>
+  A postgres.js connection instance
+</ParamField>
+
+<ParamField path="opts.store.casing" type="'snake_case' | 'camelCase'" default="undefined">
+  Database column naming convention. Set to `'snake_case'` if your database uses snake_case naming.
+</ParamField>
+
+<ResponseField name="return" type="Layer<ConversationStore>">
+  An Effect Layer that provides the ConversationStore service
+</ResponseField>
+
+## Implementation Details
+
+### Window Size Query
+
+The provider implements the window size feature efficiently:
+
+1. Finds the thread by `resourceId` and `publicId`
+2. Queries for the N most recent **user messages**
+3. Identifies the oldest user message in the window
+4. Returns **all messages** (user, assistant, tool) from that point forward
+
+This ensures you get complete conversation context including all assistant responses and tool interactions.
+
+```sql
+-- Step 1: Find recent user messages (window)
+SELECT id, created_at
+FROM ff_ai.messages
+WHERE thread_id = $1
+  AND ai_sdk_v5->>'role' = 'user'
+ORDER BY created_at DESC, id DESC
+LIMIT $windowSize;
+
+-- Step 2: Get all messages from oldest in window
+SELECT uuid, ai_sdk_v5, created_at
+FROM ff_ai.messages
+WHERE thread_id = $1
+  AND id >= $oldestId
+ORDER BY created_at ASC, id ASC;
+```
+
+### Transactions
+
+The `saveMessages` method uses a database transaction to ensure atomicity:
+
+```typescript
+// Pseudocode of the implementation
+transaction(async (tx) => {
+  // 1. Insert or update thread
+  const thread = await tx
+    .insert(threads)
+    .values({ publicId, resourceId, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: [resourceId, publicId],
+      set: { updatedAt: new Date() }
+    });
+
+  // 2. Insert messages
+  if (messages.length > 0) {
+    await tx.insert(messages).values(
+      messages.map(msg => ({
+        uuid: msg.id,
+        threadId: thread.id,
+        aiSdkV5: msg,  // Everything except id and createdAt
+        createdAt: msg.createdAt
+      }))
+    );
+  }
+});
+```
+
+This guarantees:
+
+- Thread is created/updated atomically with messages
+- Either all messages save or none do (no partial writes)
+- Thread `updatedAt` always reflects latest activity
+
+### Cascade Deletes
+
+Messages are automatically deleted when their thread is deleted:
+
+```typescript
+threadId: bigint({ mode: 'number' })
+  .references(() => threads.id, { onDelete: 'cascade' })
+```
+
+This simplifies conversation cleanup:
+
+```sql
+-- Delete a conversation and all its messages
+DELETE FROM ff_ai.threads
+WHERE resource_id = 'user-123'
+  AND public_id = 'thread-456';
+-- Messages are automatically deleted
+```
+
+## Advanced Usage
+
+### Custom Drizzle Client
+
+If you need more control over the Drizzle client:
+
+```typescript
+import { createClient, createCaller, StoreDrizzle } from 'ff-ai/providers/drizzle/store';
+import { ConversationStoreLayer } from 'ff-ai/providers/drizzle/conversation';
+import { Layer } from 'effect';
+
+const client = createClient(sql, {
+  casing: 'snake_case',
+  // Other Drizzle options...
+});
+
+const customLayer = Layer.provide(
+  ConversationStoreLayer,
+  Layer.succeed(StoreDrizzle, {
+    call: createCaller(client)
+  })
+);
+```
+
+### Multiple Database Connections
+
+Use different databases for different parts of your app:
+
+```typescript
+const mainSql = postgres(process.env.MAIN_DB_URL!);
+const aiSql = postgres(process.env.AI_DB_URL!);
+
+const mainStoreLayer = createDrizzleStoreLayer(mainSql);
+const aiStoreLayer = createDrizzleStoreLayer(aiSql);
+
+// Use aiStoreLayer for AI conversations
+const aiProgram = Effect.provide(conversationLogic, aiStoreLayer);
+```
+
+### Direct Database Access
+
+If you need to query the database directly:
+
+```typescript
+import { Effect } from 'effect';
+import { StoreDrizzle } from 'ff-ai/providers/drizzle/store';
+import { threads, messages } from 'ff-ai/providers/drizzle/schema';
+import { eq } from 'drizzle-orm';
+
+const program = Effect.gen(function* () {
+  const db = yield* StoreDrizzle;
+
+  // Custom query
+  const result = yield* db.call((drizzle) =>
+    drizzle
+      .select()
+      .from(threads)
+      .where(eq(threads.resourceId, 'user-123'))
+  );
+
+  return result;
+});
+```
+
+## Performance Considerations
+
+<AccordionGroup>
+  <Accordion title="Indexes">
+    The schema includes essential indexes:
+
+    ```sql
+    -- On messages.thread_id for fast thread lookups
+    CREATE INDEX idx_messages_thread_id ON ff_ai.messages(thread_id);
+
+    -- On messages.created_at for window queries
+    CREATE INDEX idx_messages_created_at ON ff_ai.messages(created_at);
+    ```
+
+    Consider adding:
+
+    ```sql
+    -- For user-specific queries
+    CREATE INDEX idx_threads_resource_id ON ff_ai.threads(resource_id);
+
+    -- For JSONB queries (if needed)
+    CREATE INDEX idx_messages_role ON ff_ai.messages 
+      USING gin ((ai_sdk_v5->'role'));
+    ```
+  </Accordion>
+
+  <Accordion title="Connection Pooling">
+    Use connection pooling for better performance:
+
+    ```typescript
+    const sql = postgres(process.env.DATABASE_URL!, {
+      max: 10,  // Maximum pool size
+      idle_timeout: 20,
+      connect_timeout: 10
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="JSONB Performance">
+    The `aiSdkV5` column stores the complete message as JSONB:
+
+    - **Pros**: Flexible schema, easy queries, no migration needed
+    - **Cons**: Slightly slower than relational columns
+
+    For high-volume applications, consider:
+    - Extracting frequently-queried fields to columns
+    - Using JSONB operators for efficient queries
+    - Adding GIN indexes for JSONB queries
+  </Accordion>
+
+  <Accordion title="Window Size Impact">
+    Larger window sizes require more database queries:
+
+    - Window size 10: ~50-100 messages typically returned
+    - Window size 50: ~250-500 messages typically returned
+
+    Monitor query performance and adjust window sizes accordingly.
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Schema not found error">
+    Ensure the `ff_ai` schema exists:
+
+    ```sql
+    CREATE SCHEMA IF NOT EXISTS ff_ai;
+    ```
+  </Accordion>
+
+  <Accordion title="Connection errors">
+    Check your connection string and network:
+
+    ```typescript
+    const sql = postgres(process.env.DATABASE_URL!, {
+      onnotice: () => {},  // Suppress notices
+      debug: true,         // Enable debug logging
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Casing mismatches">
+    If you see column name errors, set the casing option:
+
+    ```typescript
+    createDrizzleStoreLayer(sql, {
+      store: { casing: 'snake_case' }
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Foreign key violations">
+    Ensure threads are created before messages:
+
+    ```typescript
+    // Don't insert messages manually
+    // Always use ConversationStore.saveMessages
+    yield* store.saveMessages({
+      resourceId: 'user-123',
+      threadId: 'thread-456',
+      messages: [...]
+    });
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Migration from Other Stores
+
+If you're migrating from another storage system:
+
+```typescript
+import { ConversationMessage } from 'ff-ai';
+import { Effect } from 'effect';
+
+const migrate = Effect.gen(function* () {
+  const store = yield* ConversationStore;
+
+  // Fetch from old system
+  const oldMessages = yield* fetchOldMessages();
+
+  // Convert to ConversationMessage format
+  const messages = oldMessages.map((msg) =>
+    ConversationMessage.fromModelMessage({
+      role: msg.role,
+      content: msg.content
+    })
+  );
+
+  // Save to new system
+  yield* store.saveMessages({
+    resourceId: msg.userId,
+    threadId: msg.conversationId,
+    messages
+  });
+});
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Turn Handler" icon="arrows-rotate" href="/ff-ai/turn-handler">
+    Use the turn handler with Drizzle storage
+  </Card>
+  <Card title="Conversation Store" icon="database" href="/ff-ai/conversation-store">
+    Learn about the store interface
+  </Card>
+  <Card title="Examples" icon="code" href="/ff-ai/examples">
+    See complete examples with Drizzle
+  </Card>
+</CardGroup>

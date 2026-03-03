@@ -1,0 +1,250 @@
+---
+title: oRPC Integration
+description: Integrate oRPC routers with ff-serv handlers
+---
+
+oRPC is a modern RPC framework with first-class TypeScript support. ff-serv provides a handler that wraps [@orpc/server](https://orpc.dev) routers.
+
+## Installation
+
+```bash
+bun add @orpc/server @orpc/client
+```
+
+## Basic Usage
+
+```typescript
+import { createFetchHandler } from 'ff-serv'
+import { oRPCHandler } from 'ff-serv/orpc'
+import { os } from '@orpc/server'
+import { RPCHandler } from '@orpc/server/fetch'
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  // Define your oRPC router
+  const router = {
+    health: os.handler(() => ({ status: 'ok' })),
+    greeting: os.handler((input: { name: string }) => `Hello, ${input.name}!`),
+  }
+
+  // Create the oRPC handler
+  const handler = new RPCHandler(router)
+
+  const fetch = yield* createFetchHandler([
+    oRPCHandler(handler),
+  ])
+
+  Bun.serve({ port: 3000, fetch })
+})
+
+Effect.runPromise(program)
+```
+
+## With Effect Context
+
+Pass Effect-based options to provide context to your oRPC handlers:
+
+```typescript
+import { Context, Effect } from 'effect'
+
+class Database extends Context.Tag('Database')<
+  Database,
+  { query: (sql: string) => Effect.Effect<unknown[]> }
+>() {}
+
+const router = {
+  users: os.handler(async () => {
+    // Access context in oRPC handler
+    const db = await Effect.runPromise(Database)
+    return db.query('SELECT * FROM users')
+  }),
+}
+
+const program = Effect.gen(function* () {
+  const db = yield* Database
+
+  const fetch = yield* createFetchHandler([
+    oRPCHandler(
+      new RPCHandler(router),
+      // Provide context to oRPC
+      { context: { database: db } }
+    ),
+  ])
+
+  Bun.serve({ port: 3000, fetch })
+})
+```
+
+## Dynamic Options
+
+Options can be computed per-request:
+
+```typescript
+oRPCHandler(
+  handler,
+  (request) => {
+    const token = request.headers.get('Authorization')
+    return {
+      context: {
+        userId: parseToken(token),
+      },
+    }
+  }
+)
+```
+
+## Options as Effect
+
+Options can also be an Effect:
+
+```typescript
+import { HttpClient } from '@effect/platform'
+
+oRPCHandler(
+  handler,
+  Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient
+    // Fetch config from external service
+    const config = yield* client.get('https://api.example.com/config')
+    
+    return {
+      context: { config: yield* config.json },
+    }
+  })
+)
+```
+
+## Client Setup
+
+Connect from the client using [@orpc/client](https://orpc.dev/client):
+
+```typescript
+import { createORPCClient } from '@orpc/client'
+import { RPCLink } from '@orpc/client/fetch'
+import type { RouterClient } from '@orpc/server'
+
+type Router = typeof router
+
+const client: RouterClient<Router> = createORPCClient(
+  new RPCLink({ url: 'http://localhost:3000' })
+)
+
+// Fully typed calls
+const result = await client.greeting({ name: 'Alice' })
+console.log(result) // "Hello, Alice!"
+```
+
+## With ff-effect Client Wrapper
+
+Use [ff-effect](https://github.com/fdarian/ff/tree/main/packages/effect)'s `wrapClient` to call oRPC from Effect code:
+
+```typescript
+import { wrapClient } from 'ff-effect'
+import { UnknownException } from 'effect/Cause'
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const call = wrapClient({
+    client,
+    error: ({ cause }) => new UnknownException(cause),
+  })
+
+  const result = yield* call((c) => c.greeting({ name: 'Bob' }))
+  yield* Effect.log(result)
+})
+
+Effect.runPromise(program)
+```
+
+## Complete Example
+
+```typescript src/server.ts
+import { createFetchHandler, basicHandler } from 'ff-serv'
+import { oRPCHandler } from 'ff-serv/orpc'
+import { os } from '@orpc/server'
+import { RPCHandler } from '@orpc/server/fetch'
+import { Effect, Context } from 'effect'
+
+// Define a service
+class Config extends Context.Tag('Config')<
+  Config,
+  { apiKey: string }
+>() {}
+
+const program = Effect.gen(function* () {
+  const config = yield* Config
+
+  // Define oRPC router with context
+  const router = {
+    health: os.handler(() => ({ status: 'ok' })),
+    
+    protected: os.handler((input: { data: string }) => {
+      return {
+        message: `Processed with key: ${config.apiKey}`,
+        data: input.data,
+      }
+    }),
+  }
+
+  const fetch = yield* createFetchHandler([
+    // oRPC endpoints at /rpc/*
+    oRPCHandler(new RPCHandler(router), {
+      context: { config },
+    }),
+
+    // Regular HTTP endpoint
+    basicHandler('/version', () => 
+      Response.json({ version: '1.0.0' })
+    ),
+  ])
+
+  Bun.serve({ port: 3000, fetch })
+  yield* Effect.log('Server ready')
+})
+
+Effect.runPromise(
+  program.pipe(
+    Effect.provideService(Config, { apiKey: 'secret' })
+  )
+)
+```
+
+```typescript src/client.ts
+import { createORPCClient } from '@orpc/client'
+import { RPCLink } from '@orpc/client/fetch'
+import type { RouterClient } from '@orpc/server'
+import type { router } from './server'
+
+const client: RouterClient<typeof router> = createORPCClient(
+  new RPCLink({ url: 'http://localhost:3000' })
+)
+
+const health = await client.health()
+console.log(health) // { status: 'ok' }
+
+const result = await client.protected({ data: 'test' })
+console.log(result)
+// { message: 'Processed with key: secret', data: 'test' }
+```
+
+## Type Signature
+
+```typescript
+function oRPCHandler<T extends Context, E, R>(
+  handler: FetchHandler<T>,
+  opt?: 
+    | FriendlyStandardHandleOptions<T>
+    | Effect.Effect<FriendlyStandardHandleOptions<T>, E, R>
+    | ((request: Request) => 
+        | FriendlyStandardHandleOptions<T>
+        | Effect.Effect<FriendlyStandardHandleOptions<T>, E, R>
+      )
+): Handler<'oRPCHandler', never>
+```
+
+- **handler**: An oRPC `FetchHandler` (from `@orpc/server/fetch`)
+- **opt**: Context and options to pass to oRPC, as a value, Effect, or request function
+
+<Note>
+  The oRPC handler matches **all requests** by default. Place it after any custom `basicHandler` routes if you want to handle specific paths separately.
+</Note>

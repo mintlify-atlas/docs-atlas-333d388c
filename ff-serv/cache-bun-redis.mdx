@@ -1,0 +1,242 @@
+---
+title: Cache with bun-redis
+description: Use Bun's native Redis client as a cache adapter
+---
+
+The `bunRedis` adapter wraps Bun's native Redis client for persistent caching. This is optimized for Bun runtime.
+
+<Note>
+  Bun Redis is part of Bun's standard library. No additional dependencies required if using Bun.
+</Note>
+
+## Basic Usage
+
+```typescript
+import { Cache, CacheAdapter } from 'ff-serv/cache'
+import { bunRedis } from 'ff-serv/cache/bun-redis'
+import { Effect, Duration } from 'effect'
+import { Redis } from 'bun'
+
+const program = Effect.gen(function* () {
+  const redis = new Redis({
+    url: 'redis://localhost:6379',
+  })
+  const client = bunRedis(redis)
+
+  const cache = yield* Cache.make({
+    ttl: Duration.minutes(5),
+    lookup: (key: string) => Effect.succeed(`value-${key}`),
+    adapter: CacheAdapter.redis({
+      client,
+      keyPrefix: 'myapp',
+    }),
+  })
+
+  const value = yield* cache.get('test')
+  yield* Effect.log(value)
+})
+
+Effect.runPromise(program)
+```
+
+## Redis Connection
+
+```typescript
+import { Redis } from 'bun'
+
+// Local Redis
+const redis = new Redis({
+  url: 'redis://localhost:6379',
+})
+
+// Remote Redis with auth
+const redis = new Redis({
+  url: 'redis://:password@redis.example.com:6379',
+})
+
+// With options
+const redis = new Redis({
+  url: 'redis://localhost:6379',
+  connectTimeout: 5000,
+})
+```
+
+## Adapter Configuration
+
+```typescript
+CacheAdapter.redis({
+  client: bunRedis(redis),
+  keyPrefix: 'myapp',
+  schema?: Schema.Schema<Value, string>, // Optional serialization
+})
+```
+
+## With Schema Serialization
+
+```typescript
+import { Schema } from 'effect'
+
+const User = Schema.Struct({
+  id: Schema.Number,
+  name: Schema.String,
+  email: Schema.String,
+})
+
+const cache = yield* Cache.make({
+  ttl: Duration.minutes(5),
+  lookup: (userId: number) => fetchUser(userId),
+  adapter: CacheAdapter.redis({
+    client: bunRedis(redis),
+    keyPrefix: 'users',
+    schema: User,
+  }),
+})
+```
+
+## Differences from ioredis
+
+The `bunRedis` adapter uses Bun's native Redis client which:
+
+- **Faster**: Native implementation in Bun
+- **No dependencies**: Built into Bun runtime
+- **Same API**: Drop-in replacement for `ioredis` adapter
+
+```typescript
+// ioredis
+import { ioredis } from 'ff-serv/cache/ioredis'
+import Redis from 'ioredis'
+const client = ioredis(new Redis())
+
+// bun-redis
+import { bunRedis } from 'ff-serv/cache/bun-redis'
+import { Redis } from 'bun'
+const client = bunRedis(new Redis({ url: 'redis://localhost:6379' }))
+```
+
+## Tiered Caching
+
+```typescript
+import { CacheAdapter } from 'ff-serv/cache'
+import { bunRedis } from 'ff-serv/cache/bun-redis'
+import { Redis } from 'bun'
+
+const redis = new Redis({ url: 'redis://localhost:6379' })
+const client = bunRedis(redis)
+
+const l1 = CacheAdapter.memory({ capacity: 100 })
+const l2 = CacheAdapter.redis({ client, keyPrefix: 'app' })
+
+const cache = yield* Cache.make({
+  ttl: Duration.minutes(5),
+  lookup: (key: string) => fetchData(key),
+  adapter: CacheAdapter.tiered(l1, l2),
+})
+```
+
+## Complete Example
+
+```typescript
+import { Cache, CacheAdapter } from 'ff-serv/cache'
+import { bunRedis } from 'ff-serv/cache/bun-redis'
+import { createFetchHandler, basicHandler } from 'ff-serv'
+import { Effect, Duration, Schema } from 'effect'
+import { Redis } from 'bun'
+
+// Schema for cached data
+const ApiResponse = Schema.Struct({
+  data: Schema.String,
+  timestamp: Schema.Number,
+})
+
+type ApiResponse = Schema.Schema.Type<typeof ApiResponse>
+
+const program = Effect.gen(function* () {
+  const redis = new Redis({ url: 'redis://localhost:6379' })
+  const client = bunRedis(redis)
+
+  // Create cache with Redis persistence
+  const apiCache = yield* Cache.make({
+    ttl: Duration.seconds(30),
+    swr: Duration.seconds(60),
+    lookup: (endpoint: string) =>
+      Effect.gen(function* () {
+        yield* Effect.log(`Fetching ${endpoint} from external API`)
+        return {
+          data: `Response from ${endpoint}`,
+          timestamp: Date.now(),
+        } satisfies ApiResponse
+      }),
+    adapter: CacheAdapter.redis({
+      client,
+      keyPrefix: 'api',
+      schema: ApiResponse,
+    }),
+  })
+
+  const fetch = yield* createFetchHandler([
+    basicHandler('/api/:endpoint', (request) =>
+      Effect.gen(function* () {
+        const url = new URL(request.url)
+        const endpoint = url.pathname.split('/').pop() || 'default'
+        
+        const cached = yield* apiCache.get(endpoint)
+        return Response.json(cached)
+      })
+    ),
+  ])
+
+  Bun.serve({ port: 3000, fetch })
+  yield* Effect.log('Server running with Redis cache')
+})
+
+Effect.runPromise(program)
+```
+
+## Type Signature
+
+```typescript
+function bunRedis(client: BunRedisClient): RedisClient
+
+type BunRedisClient = {
+  get(key: string): Promise<string | null>
+  send(command: string, args: string[]): Promise<unknown>
+  del(key: string): Promise<number>
+}
+
+type RedisClient = {
+  readonly get: (key: string) => Effect.Effect<Option.Option<string>>
+  readonly set: (key: string, value: string, ttlMs: number) => Effect.Effect<void>
+  readonly del: (key: string) => Effect.Effect<void>
+}
+```
+
+## SET Command Implementation
+
+Bun's Redis client uses `send()` for the `SET` command with TTL:
+
+```typescript
+// Internally calls:
+redis.send('SET', [key, value, 'PX', String(ttlMs)])
+```
+
+This is equivalent to:
+
+```redis
+SET key value PX ttlMs
+```
+
+## Error Handling
+
+Redis errors are converted to Effect failures:
+
+```typescript
+const result = yield* cache.get('key').pipe(Effect.either)
+
+if (result._tag === 'Left') {
+  yield* Effect.log('Cache error:', result.left)
+}
+```
+
+<Note>
+  Like the ioredis adapter, `bunRedis` uses `Effect.orDie` for Redis operations - errors will crash the fiber unless explicitly caught.
+</Note>

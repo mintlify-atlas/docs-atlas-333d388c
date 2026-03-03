@@ -1,0 +1,457 @@
+---
+title: 'Turn Handler'
+description: 'Manage multi-turn AI conversations with automatic message persistence'
+icon: 'arrows-rotate'
+---
+
+## Overview
+
+The `createTurnHandler` function creates a handler for managing multi-turn conversations. It automatically handles message persistence, history retrieval, and integrates seamlessly with the Vercel AI SDK.
+
+## Creating a Turn Handler
+
+```typescript
+import { createTurnHandler } from 'ff-ai';
+import { Effect } from 'effect';
+
+const program = Effect.gen(function* () {
+  const handler = yield* createTurnHandler({
+    identifier: {
+      resourceId: 'user-123',
+      threadId: 'conversation-456'
+    }
+  });
+
+  // Use handler methods...
+});
+```
+
+### Parameters
+
+<ParamField path="ctx" type="object" required>
+  Configuration for the turn handler
+
+  <Expandable title="properties">
+    <ParamField path="identifier" type="ThreadIdentifier" required>
+      Identifies the conversation thread
+
+      <Expandable title="properties">
+        <ParamField path="resourceId" type="string" required>
+          Resource identifier (e.g., user ID, project ID)
+        </ParamField>
+
+        <ParamField path="threadId" type="string" required>
+          Conversation thread identifier
+        </ParamField>
+      </Expandable>
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="return" type="Effect<TurnHandler, StoreError, ConversationStore>">
+  An Effect that provides a turn handler instance with three methods: `getHistory`, `saveUserMessage`, and `onStep`
+</ResponseField>
+
+## Handler Methods
+
+### getHistory
+
+Retrieve conversation history from the store.
+
+```typescript
+const messages = yield* handler.getHistory({ windowSize: 10 });
+```
+
+<ParamField path="params" type="object">
+  Optional parameters
+
+  <Expandable title="properties">
+    <ParamField path="windowSize" type="number" default="10">
+      Number of recent user messages to include in the history
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="return" type="Effect<ConversationMessage[], StoreError>">
+  An Effect that resolves to an array of conversation messages, ordered chronologically
+</ResponseField>
+
+**Example:**
+
+```typescript
+const program = Effect.gen(function* () {
+  const handler = yield* createTurnHandler({
+    identifier: { resourceId: 'user-123', threadId: 'thread-456' }
+  });
+
+  // Get last 5 user messages and all associated messages
+  const history = yield* handler.getHistory({ windowSize: 5 });
+
+  console.log(`Retrieved ${history.length} messages`);
+  return history;
+});
+```
+
+### saveUserMessage
+
+Save a user message to the conversation.
+
+```typescript
+yield* handler.saveUserMessage({
+  role: 'user',
+  content: 'Hello, AI!'
+});
+```
+
+<ParamField path="message" type="Ai.ModelMessage" required>
+  The user message to save (from AI SDK). Should have `role: 'user'`.
+</ParamField>
+
+<ResponseField name="return" type="Effect<void, StoreError>">
+  An Effect that resolves when the message is saved
+</ResponseField>
+
+**Example:**
+
+```typescript
+const program = Effect.gen(function* () {
+  const handler = yield* createTurnHandler({
+    identifier: { resourceId: 'user-123', threadId: 'thread-456' }
+  });
+
+  yield* handler.saveUserMessage({
+    role: 'user',
+    content: 'What is the weather like today?'
+  });
+
+  console.log('User message saved');
+});
+```
+
+### onStep
+
+Save assistant and tool messages from an AI SDK step.
+
+```typescript
+yield* handler.onStep(step);
+```
+
+<ParamField path="step" type="Ai.StepResult<TOOLS>" required>
+  A step result from the AI SDK's multi-step generation (from `onStepFinish` callback)
+</ParamField>
+
+<ResponseField name="return" type="Effect<void, StoreError>">
+  An Effect that resolves when all new messages from the step are saved
+</ResponseField>
+
+**How it works:**
+
+- Tracks message indices to detect new messages
+- Extracts only new messages added in this step
+- Converts them to `ConversationMessage` format
+- Saves them to the store
+
+**Example:**
+
+```typescript
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+const program = Effect.gen(function* () {
+  const handler = yield* createTurnHandler({
+    identifier: { resourceId: 'user-123', threadId: 'thread-456' }
+  });
+
+  const result = yield* Effect.tryPromise(() =>
+    generateText({
+      model: openai('gpt-4'),
+      messages: [{ role: 'user', content: 'Hello!' }],
+      onStepFinish: async (step) => {
+        // Automatically save messages from each step
+        await handler.onStep(step).pipe(Effect.runPromise);
+      }
+    })
+  );
+
+  return result;
+});
+```
+
+## Complete Example
+
+Here's a full example showing all turn handler methods in action:
+
+```typescript
+import { createTurnHandler, ConversationStore } from 'ff-ai';
+import { createDrizzleStoreLayer } from 'ff-ai/providers/drizzle';
+import { Effect } from 'effect';
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+import postgres from 'postgres';
+
+// Set up database and store
+const sql = postgres(process.env.DATABASE_URL!);
+const storeLayer = createDrizzleStoreLayer(sql);
+
+const conversationProgram = Effect.gen(function* () {
+  // Create turn handler
+  const handler = yield* createTurnHandler({
+    identifier: {
+      resourceId: 'user-123',
+      threadId: 'chat-session-456'
+    }
+  });
+
+  // Get conversation history
+  const history = yield* handler.getHistory({ windowSize: 10 });
+  console.log(`Starting with ${history.length} messages in history`);
+
+  // User sends a message
+  const userMessage = {
+    role: 'user' as const,
+    content: 'Tell me a joke about programming'
+  };
+
+  // Save user message
+  yield* handler.saveUserMessage(userMessage);
+
+  // Generate AI response
+  const result = yield* Effect.tryPromise(() =>
+    generateText({
+      model: openai('gpt-4'),
+      messages: [
+        ...history,
+        userMessage
+      ],
+      onStepFinish: async (step) => {
+        // Automatically save assistant messages
+        await handler.onStep(step).pipe(Effect.runPromise);
+      }
+    })
+  );
+
+  console.log('AI Response:', result.text);
+
+  // Get updated history
+  const updatedHistory = yield* handler.getHistory();
+  console.log(`Now have ${updatedHistory.length} messages in history`);
+
+  return result;
+});
+
+// Run the program
+conversationProgram.pipe(
+  Effect.provide(storeLayer),
+  Effect.runPromise
+);
+```
+
+## Multi-Turn with Tools
+
+The turn handler works seamlessly with tool calls:
+
+```typescript
+import { tool, generateText } from 'ai';
+import { z } from 'zod';
+
+const tools = {
+  getWeather: tool({
+    description: 'Get the weather for a location',
+    parameters: z.object({
+      location: z.string()
+    }),
+    execute: async ({ location }) => {
+      return {
+        location,
+        temperature: 72,
+        condition: 'Sunny'
+      };
+    }
+  })
+};
+
+const program = Effect.gen(function* () {
+  const handler = yield* createTurnHandler({
+    identifier: { resourceId: 'user-123', threadId: 'thread-456' }
+  });
+
+  const history = yield* handler.getHistory();
+
+  const userMessage = {
+    role: 'user' as const,
+    content: 'What is the weather in San Francisco?'
+  };
+
+  yield* handler.saveUserMessage(userMessage);
+
+  const result = yield* Effect.tryPromise(() =>
+    generateText({
+      model: openai('gpt-4'),
+      tools,
+      messages: [...history, userMessage],
+      maxSteps: 5,
+      onStepFinish: async (step) => {
+        // Saves tool calls, tool results, and assistant messages
+        await handler.onStep(step).pipe(Effect.runPromise);
+
+        console.log(`Step ${step.stepIndex}:`);
+        console.log(`- Tool calls: ${step.toolCalls.length}`);
+        console.log(`- Tool results: ${step.toolResults.length}`);
+      }
+    })
+  );
+
+  return result;
+});
+```
+
+## Streaming Responses
+
+For streaming responses, use `onStepFinish` to save messages as they complete:
+
+```typescript
+import { streamText } from 'ai';
+
+const program = Effect.gen(function* () {
+  const handler = yield* createTurnHandler({
+    identifier: { resourceId: 'user-123', threadId: 'thread-456' }
+  });
+
+  const userMessage = { role: 'user' as const, content: 'Hello!' };
+  yield* handler.saveUserMessage(userMessage);
+
+  const stream = yield* Effect.tryPromise(() =>
+    streamText({
+      model: openai('gpt-4'),
+      messages: [userMessage],
+      onStepFinish: async (step) => {
+        // Save complete messages after each step
+        await handler.onStep(step).pipe(Effect.runPromise);
+      }
+    })
+  );
+
+  // Process stream...
+  for await (const chunk of stream.textStream) {
+    process.stdout.write(chunk);
+  }
+});
+```
+
+## Error Handling
+
+Handle errors from the turn handler using Effect operators:
+
+```typescript
+const program = Effect.gen(function* () {
+  const handler = yield* createTurnHandler({
+    identifier: { resourceId: 'user-123', threadId: 'thread-456' }
+  });
+
+  const messages = yield* handler.getHistory().pipe(
+    Effect.catchTag('StoreError', (error) => {
+      console.error('Failed to get history:', error.message);
+      // Return empty history on error
+      return Effect.succeed([]);
+    })
+  );
+
+  return messages;
+});
+```
+
+## Window Size Behavior
+
+The `windowSize` parameter in `getHistory` controls conversation context:
+
+```typescript
+// Get last 5 user messages (and all related assistant/tool messages)
+const recentHistory = yield* handler.getHistory({ windowSize: 5 });
+
+// Get last 20 user messages (for more context)
+const extendedHistory = yield* handler.getHistory({ windowSize: 20 });
+
+// Get no history (fresh conversation)
+const noHistory = yield* handler.getHistory({ windowSize: 0 });
+```
+
+**Window size considerations:**
+
+- Larger windows = more context but higher token costs
+- Smaller windows = less context but faster and cheaper
+- Default of 10 works well for most conversations
+- Set to 0 for one-shot queries without history
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Always save user messages first">
+    Save the user message before generating a response:
+
+    ```typescript
+    yield* handler.saveUserMessage(userMessage);
+    const result = yield* generateAIResponse(...);
+    ```
+  </Accordion>
+
+  <Accordion title="Use onStepFinish for automatic saving">
+    Let the turn handler automatically save assistant messages:
+
+    ```typescript
+    generateText({
+      // ...
+      onStepFinish: async (step) => {
+        await handler.onStep(step).pipe(Effect.runPromise);
+      }
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="Adjust window size based on use case">
+    - Chat interfaces: 10-20 messages
+    - Q&A bots: 5-10 messages
+    - Single queries: 0 messages
+    - Complex tasks: 20-50 messages
+  </Accordion>
+
+  <Accordion title="Handle errors gracefully">
+    Always provide fallback behavior for store errors:
+
+    ```typescript
+    const history = yield* handler.getHistory().pipe(
+      Effect.catchAll(() => Effect.succeed([]))
+    );
+    ```
+  </Accordion>
+
+  <Accordion title="Create one handler per conversation">
+    Don't reuse handlers across different conversations:
+
+    ```typescript
+    // Good - one handler per conversation
+    const handler1 = yield* createTurnHandler({ identifier: { ... } });
+    const handler2 = yield* createTurnHandler({ identifier: { ... } });
+
+    // Bad - reusing handler
+    const handler = yield* createTurnHandler({ identifier: thread1 });
+    // Don't use the same handler for thread2
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Conversation Store" icon="database" href="/ff-ai/conversation-store">
+    Understand the underlying storage interface
+  </Card>
+  <Card title="Messages" icon="message" href="/ff-ai/messages">
+    Learn about message types and utilities
+  </Card>
+  <Card title="Drizzle Provider" icon="database" href="/ff-ai/drizzle-provider">
+    Set up PostgreSQL storage
+  </Card>
+  <Card title="Examples" icon="code" href="/ff-ai/examples">
+    See complete implementations
+  </Card>
+</CardGroup>

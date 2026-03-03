@@ -1,0 +1,316 @@
+---
+title: CLI
+description: Database utilities and command-line tools
+---
+
+ff-serv includes a CLI tool (`ff-serv`) with database utilities for pulling and dumping PostgreSQL databases.
+
+## Installation
+
+```bash
+bun add ff-serv
+```
+
+The CLI is available as `ff-serv` in your `node_modules/.bin` or via `bun run`.
+
+## Commands
+
+### `db pull`
+
+Pull a database from a source and restore it to a target database.
+
+```bash
+ff-serv db pull [targetDatabaseUrl] [options]
+```
+
+**Features:**
+- Interactive prompts for configuration
+- Automatic schema introspection and truncation
+- Retry on failure
+- Save dump file for reuse
+
+**Options:**
+
+- `--fromDump <path>`: Use an existing dump file instead of downloading
+- `--saveDump <path>`: Save the dump file to a specific location
+- `--config <path>`: Path to config file
+
+**Examples:**
+
+```bash
+# Pull from remote to local
+ff-serv db pull postgresql://postgres:password@localhost:5432/mydb
+
+# Use existing dump file
+ff-serv db pull --fromDump ./backup.sql postgresql://localhost/mydb
+
+# Save dump for later
+ff-serv db pull --saveDump ./backup.sql postgresql://localhost/mydb
+
+# Use config file
+ff-serv db pull --config ./ff-serv.config.json
+```
+
+**Interactive Flow:**
+
+1. **Source Selection**: Choose source database (from config or manual input)
+2. **Confirmation**: Review source and target database details
+3. **Dump**: Downloads database dump to temp file
+4. **Schema Review**: Shows all tables that will be truncated
+5. **Truncation**: Confirms and truncates target database
+6. **Restore**: Restores data from dump file
+7. **Cleanup**: Optionally removes temp dump file
+
+### `db dump`
+
+Dump a database to a SQL file.
+
+```bash
+ff-serv db dump [options]
+```
+
+**Options:**
+
+- `--output <path>` or `-o <path>`: Output file path (default: `./dump.sql`)
+- `--config <path>`: Path to config file
+
+**Examples:**
+
+```bash
+# Dump to default file
+ff-serv db dump
+
+# Custom output path
+ff-serv db dump -o ./backups/$(date +%Y%m%d).sql
+
+# Use config file
+ff-serv db dump --config ./ff-serv.config.json
+```
+
+## Configuration File
+
+Create `ff-serv.config.json` to store database sources:
+
+```json
+{
+  "pullDatabase": {
+    "source": {
+      "type": "url",
+      "url": "postgresql://user:pass@prod.example.com:5432/mydb"
+    },
+    "targetDatabaseUrl": "postgresql://postgres:password@localhost:5432/mydb_dev"
+  }
+}
+```
+
+**Schema:**
+
+```typescript
+type Config = {
+  pullDatabase?: {
+    source?: DatabaseSource
+    targetDatabaseUrl?: string
+  }
+}
+
+type DatabaseSource =
+  | { type: 'url'; url: string }
+  | { type: 'cloudflare-r2'; bucket: string; key: string }
+```
+
+### Cloudflare R2 Source
+
+Load dumps from Cloudflare R2:
+
+```json
+{
+  "pullDatabase": {
+    "source": {
+      "type": "cloudflare-r2",
+      "bucket": "my-backups",
+      "key": "latest.sql"
+    }
+  }
+}
+```
+
+Requires environment variables:
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID=your_account_id
+export CLOUDFLARE_ACCESS_KEY_ID=your_access_key
+export CLOUDFLARE_SECRET_ACCESS_KEY=your_secret_key
+```
+
+## Complete Workflow
+
+### Setup
+
+1. Create config file:
+
+```json ff-serv.config.json
+{
+  "pullDatabase": {
+    "source": {
+      "type": "url",
+      "url": "postgresql://user:pass@prod.example.com:5432/prod_db"
+    },
+    "targetDatabaseUrl": "postgresql://postgres:dev@localhost:5432/dev_db"
+  }
+}
+```
+
+2. Pull database:
+
+```bash
+ff-serv db pull --config ff-serv.config.json
+```
+
+3. Review the output:
+
+```
+--- Source Database ---
+Host: prod.example.com
+Port: 5432
+Database: prod_db
+
+--- Target Database ---
+Host: localhost
+Port: 5432
+Database: dev_db
+
+Are the settings correct? (Y/n)
+```
+
+4. Confirm truncation:
+
+```
+The following will be truncated:
+
+Schema: public
+  - users
+  - posts
+  - comments
+
+Proceed with truncation? (y/N)
+```
+
+5. Wait for restore:
+
+```
+Restoring from file /tmp/dump.sql
+...
+Database pull complete!
+```
+
+## Error Handling
+
+If an error occurs during pull:
+
+1. Dump file is preserved
+2. You're prompted to retry
+3. Can resume with `--fromDump` flag
+
+```bash
+# If pull fails, retry with:
+ff-serv db pull --fromDump /tmp/dump-abc123/dump.sql postgresql://localhost/mydb
+```
+
+## Use Cases
+
+### Daily Development Sync
+
+```bash
+#!/bin/bash
+# sync-db.sh
+ff-serv db pull --config ff-serv.config.json
+```
+
+### Backup Before Migration
+
+```bash
+# Backup current state
+ff-serv db dump -o ./backups/pre-migration-$(date +%Y%m%d).sql
+
+# Run migration
+bun run migrate
+
+# If migration fails, restore:
+ff-serv db pull --fromDump ./backups/pre-migration-*.sql postgresql://localhost/mydb
+```
+
+### CI/CD Test Database
+
+```yaml .github/workflows/test.yml
+steps:
+  - name: Setup test database
+    run: |
+      ff-serv db pull --fromDump ./fixtures/test-data.sql \
+        postgresql://postgres:postgres@localhost:5432/test_db
+  
+  - name: Run tests
+    run: bun test
+```
+
+## Implementation Details
+
+The CLI uses:
+
+- [@effect/cli](https://github.com/Effect-TS/effect/tree/main/packages/cli) for command parsing
+- [inquirer](https://github.com/SBoudrias/Inquirer.js) for interactive prompts
+- [postgres](https://github.com/porsager/postgres) for database introspection
+- `psql` and `pg_dump` for dump/restore operations
+
+### Database Introspection
+
+The CLI introspects schemas and tables to show what will be truncated:
+
+```sql
+SELECT schema_name
+FROM information_schema.schemata
+WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+
+SELECT table_name
+FROM information_schema.tables
+WHERE table_schema = 'public'
+```
+
+### Truncation
+
+Uses `TRUNCATE ... RESTART IDENTITY CASCADE`:
+
+```sql
+TRUNCATE "public"."users", "public"."posts" RESTART IDENTITY CASCADE
+```
+
+## Troubleshooting
+
+### Command not found: psql
+
+Install PostgreSQL client tools:
+
+```bash
+# macOS
+brew install postgresql
+
+# Ubuntu
+sudo apt-get install postgresql-client
+```
+
+### Permission denied
+
+Ensure target database user has permissions:
+
+```sql
+GRANT ALL PRIVILEGES ON DATABASE mydb TO postgres;
+GRANT ALL ON SCHEMA public TO postgres;
+```
+
+### R2 authentication failed
+
+Verify environment variables:
+
+```bash
+echo $CLOUDFLARE_ACCOUNT_ID
+echo $CLOUDFLARE_ACCESS_KEY_ID
+```

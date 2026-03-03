@@ -1,0 +1,99 @@
+---
+title: Introduction
+description: HTTP server utilities package for Effect.ts applications
+---
+
+**ff-serv** is a lightweight HTTP server utilities package built on [Effect.ts](https://effect.website). It provides composable handlers, built-in caching with SWR (stale-while-revalidate), logging, and integrations for modern web frameworks.
+
+## Features
+
+- **Composable HTTP Handlers**: Build request handlers with Effect-based composition
+- **oRPC Integration**: First-class support for [@orpc/server](https://orpc.dev)
+- **Advanced Caching**: In-memory cache with SWR and pluggable Redis adapters
+- **Effect.ts Native**: Fully integrated with Effect's type-safe error handling and context management
+- **TypeScript-First**: Complete type safety with inference
+- **CLI Tools**: Database utilities for pulling and dumping PostgreSQL databases
+
+## Installation
+
+```bash
+bun add ff-serv effect
+```
+
+### Peer Dependencies
+
+Depending on your use case, you may need:
+
+```bash
+# For oRPC integration
+bun add @orpc/server
+
+# For port utilities
+bun add get-port
+
+# For OpenTelemetry
+bun add @effect/opentelemetry
+
+# For Redis caching (optional)
+bun add ioredis
+```
+
+## Package Exports
+
+ff-serv provides multiple entry points:
+
+```typescript
+// Main exports
+import { createFetchHandler, basicHandler, Logger, getPort } from 'ff-serv'
+
+// oRPC integration
+import { oRPCHandler } from 'ff-serv/orpc'
+
+// Cache utilities
+import { Cache, CacheAdapter } from 'ff-serv/cache'
+
+// Redis adapters
+import { ioredis } from 'ff-serv/cache/ioredis'
+import { bunRedis } from 'ff-serv/cache/bun-redis'
+```
+
+## Quick Start
+
+Here's a minimal HTTP server with Effect.ts:
+
+```typescript
+import { createFetchHandler, basicHandler } from 'ff-serv'
+import { Effect } from 'effect'
+
+const program = Effect.gen(function* () {
+  const fetch = yield* createFetchHandler([
+    basicHandler('/health', () => new Response('OK')),
+  ])
+
+  Bun.serve({
+    port: 3000,
+    fetch,
+  })
+
+  yield* Effect.log('Server running on http://localhost:3000')
+})
+
+Effect.runPromise(program)
+```
+
+## What's Next?
+
+<CardGroup cols={2}>
+  <Card title="Basic Server" icon="server" href="/ff-serv/basic-server">
+    Learn how to create HTTP handlers
+  </Card>
+  <Card title="Fetch Handler" icon="arrows-rotate" href="/ff-serv/fetch-handler">
+    Compose handlers with createFetchHandler
+  </Card>
+  <Card title="Cache" icon="database" href="/ff-serv/cache">
+    Add caching with SWR support
+  </Card>
+  <Card title="CLI" icon="terminal" href="/ff-serv/cli">
+    Database utilities and CLI tools
+  </Card>
+</CardGroup>

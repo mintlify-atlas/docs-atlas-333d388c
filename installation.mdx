@@ -1,0 +1,376 @@
+---
+title: Installation
+description: Install FF packages for your TypeScript project
+---
+
+## Overview
+
+FF is distributed as three separate npm packages that you can install independently based on your needs:
+
+- **ff-effect**: Effect.ts wrappers for AI SDK, Drizzle ORM, Inngest, and oRPC
+- **ff-ai**: AI conversation management and message persistence
+- **ff-serv**: HTTP server utilities, logging, and caching
+
+All packages require Effect.ts as a peer dependency.
+
+## Prerequisites
+
+Before installing FF, ensure you have:
+
+- **Node.js** 18+ or **Bun** 1.0+ (FF is built with Bun but works with Node.js)
+- **TypeScript** 5.0+ for full type safety
+- **Effect.ts** 3.19+ as the foundational library
+
+## Installing ff-effect
+
+The `ff-effect` package provides Effect.ts wrappers for popular libraries.
+
+<CodeGroup>
+
+```bash npm
+npm install ff-effect effect
+```
+
+```bash yarn
+yarn add ff-effect effect
+```
+
+```bash pnpm
+pnpm add ff-effect effect
+```
+
+```bash bun
+bun add ff-effect effect
+```
+
+</CodeGroup>
+
+### Peer Dependencies
+
+Depending on which features you use, install the corresponding peer dependencies:
+
+<Tabs>
+  <Tab title="AI SDK">
+    For `ff-effect/for/ai` wrappers:
+    
+    <CodeGroup>
+    
+    ```bash npm
+    npm install ai
+    ```
+    
+    ```bash yarn
+    yarn add ai
+    ```
+    
+    ```bash pnpm
+    pnpm add ai
+    ```
+    
+    ```bash bun
+    bun add ai
+    ```
+    
+    </CodeGroup>
+  </Tab>
+  
+  <Tab title="Drizzle ORM">
+    For `ff-effect/for/drizzle` wrappers:
+    
+    <CodeGroup>
+    
+    ```bash npm
+    npm install drizzle-orm
+    ```
+    
+    ```bash yarn
+    yarn add drizzle-orm
+    ```
+    
+    ```bash pnpm
+    pnpm add drizzle-orm
+    ```
+    
+    ```bash bun
+    bun add drizzle-orm
+    ```
+    
+    </CodeGroup>
+  </Tab>
+  
+  <Tab title="Inngest">
+    For `ff-effect/for/inngest` wrappers:
+    
+    <CodeGroup>
+    
+    ```bash npm
+    npm install inngest
+    ```
+    
+    ```bash yarn
+    yarn add inngest
+    ```
+    
+    ```bash pnpm
+    pnpm add inngest
+    ```
+    
+    ```bash bun
+    bun add inngest
+    ```
+    
+    </CodeGroup>
+  </Tab>
+  
+  <Tab title="oRPC">
+    For `ff-effect/for/orpc` wrappers:
+    
+    <CodeGroup>
+    
+    ```bash npm
+    npm install @orpc/server @orpc/contract
+    ```
+    
+    ```bash yarn
+    yarn add @orpc/server @orpc/contract
+    ```
+    
+    ```bash pnpm
+    pnpm add @orpc/server @orpc/contract
+    ```
+    
+    ```bash bun
+    bun add @orpc/server @orpc/contract
+    ```
+    
+    </CodeGroup>
+  </Tab>
+</Tabs>
+
+## Installing ff-ai
+
+The `ff-ai` package provides AI conversation management and message persistence.
+
+<CodeGroup>
+
+```bash npm
+npm install ff-ai effect @effect/platform ai valibot
+```
+
+```bash yarn
+yarn add ff-ai effect @effect/platform ai valibot
+```
+
+```bash pnpm
+pnpm add ff-ai effect @effect/platform ai valibot
+```
+
+```bash bun
+bun add ff-ai effect @effect/platform ai valibot
+```
+
+</CodeGroup>
+
+### Drizzle Provider
+
+To use the Drizzle message storage provider:
+
+<CodeGroup>
+
+```bash npm
+npm install drizzle-orm postgres
+```
+
+```bash yarn
+yarn add drizzle-orm postgres
+```
+
+```bash pnpm
+pnpm add drizzle-orm postgres
+```
+
+```bash bun
+bun add drizzle-orm postgres
+```
+
+</CodeGroup>
+
+<Note>
+  The Drizzle provider for ff-ai is exported from `ff-ai/providers/drizzle` and requires Drizzle ORM and a PostgreSQL client.
+</Note>
+
+## Installing ff-serv
+
+The `ff-serv` package provides HTTP server utilities, logging, and caching.
+
+<CodeGroup>
+
+```bash npm
+npm install ff-serv effect @effect/opentelemetry get-port
+```
+
+```bash yarn
+yarn add ff-serv effect @effect/opentelemetry get-port
+```
+
+```bash pnpm
+pnpm add ff-serv effect @effect/opentelemetry get-port
+```
+
+```bash bun
+bun add ff-serv effect @effect/opentelemetry get-port
+```
+
+</CodeGroup>
+
+### Optional Dependencies
+
+<Tabs>
+  <Tab title="oRPC Integration">
+    For oRPC HTTP handlers:
+    
+    <CodeGroup>
+    
+    ```bash npm
+    npm install @orpc/server
+    ```
+    
+    ```bash yarn
+    yarn add @orpc/server
+    ```
+    
+    ```bash pnpm
+    pnpm add @orpc/server
+    ```
+    
+    ```bash bun
+    bun add @orpc/server
+    ```
+    
+    </CodeGroup>
+  </Tab>
+  
+  <Tab title="Redis Caching">
+    For Redis caching with ioredis:
+    
+    <CodeGroup>
+    
+    ```bash npm
+    npm install ioredis
+    ```
+    
+    ```bash yarn
+    yarn add ioredis
+    ```
+    
+    ```bash pnpm
+    pnpm add ioredis
+    ```
+    
+    ```bash bun
+    bun add ioredis
+    ```
+    
+    </CodeGroup>
+    
+    Access via `ff-serv/cache/ioredis`
+  </Tab>
+  
+  <Tab title="Bun Redis">
+    For Bun's native Redis support:
+    
+    No additional installation needed - included with Bun runtime.
+    
+    Access via `ff-serv/cache/bun-redis`
+  </Tab>
+</Tabs>
+
+## Complete Installation
+
+To install all three packages with their core dependencies:
+
+<CodeGroup>
+
+```bash npm
+npm install ff-effect ff-ai ff-serv effect @effect/platform @effect/opentelemetry ai drizzle-orm valibot get-port
+```
+
+```bash yarn
+yarn add ff-effect ff-ai ff-serv effect @effect/platform @effect/opentelemetry ai drizzle-orm valibot get-port
+```
+
+```bash pnpm
+pnpm add ff-effect ff-ai ff-serv effect @effect/platform @effect/opentelemetry ai drizzle-orm valibot get-port
+```
+
+```bash bun
+bun add ff-effect ff-ai ff-serv effect @effect/platform @effect/opentelemetry ai drizzle-orm valibot get-port
+```
+
+</CodeGroup>
+
+## TypeScript Configuration
+
+Ensure your `tsconfig.json` has strict mode enabled for the best type safety:
+
+```json tsconfig.json
+{
+  "compilerOptions": {
+    "strict": true,
+    "moduleResolution": "bundler",
+    "module": "ESNext",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "skipLibCheck": true,
+    "esModuleInterop": true
+  }
+}
+```
+
+## Verify Installation
+
+Create a simple test file to verify your installation:
+
+```typescript test.ts
+import { Effect } from 'effect';
+import { runPromiseUnwrapped } from 'ff-effect';
+
+const program = Effect.gen(function* () {
+  yield* Effect.log('FF is installed correctly!');
+  return 'Success';
+});
+
+await runPromiseUnwrapped(program);
+```
+
+Run with:
+
+<CodeGroup>
+
+```bash node
+npx tsx test.ts
+```
+
+```bash bun
+bun test.ts
+```
+
+</CodeGroup>
+
+You should see the log message and no errors.
+
+## Next Steps
+
+Now that you have FF installed, check out the [quickstart guide](/quickstart) to build your first application, or explore the individual package documentation:
+
+<CardGroup cols={3}>
+  <Card title="ff-effect" icon="wand-magic-sparkles" href="/ff-effect/introduction">
+    Explore AI SDK, Drizzle, and Inngest wrappers
+  </Card>
+  <Card title="ff-ai" icon="brain" href="/ff-ai/introduction">
+    Build conversation-based AI applications
+  </Card>
+  <Card title="ff-serv" icon="server" href="/ff-serv/introduction">
+    Create HTTP services with Effect.ts
+  </Card>
+</CardGroup>

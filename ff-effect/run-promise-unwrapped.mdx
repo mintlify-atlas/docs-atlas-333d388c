@@ -1,0 +1,240 @@
+---
+title: runPromiseUnwrapped
+description: Execute an Effect and automatically unwrap errors from Cause
+---
+
+## Overview
+
+`runPromiseUnwrapped` is a convenience wrapper around Effect's `runPromiseExit` that automatically throws errors in a more conventional format. Instead of wrapping errors in Effect's `Cause` type, it directly throws the underlying error value.
+
+## Signature
+
+```typescript
+function runPromiseUnwrapped<A, E>(
+  effect: Effect.Effect<A, E, never>
+): Promise<A>
+```
+
+### Parameters
+
+<ParamField path="effect" type="Effect.Effect<A, E, never>" required>
+  The Effect to execute. Must have no remaining service requirements (the `R` parameter must be `never`).
+</ParamField>
+
+### Returns
+
+Returns a `Promise<A>` that:
+- Resolves with the success value if the Effect succeeds
+- Rejects with the error value (unwrapped from `Cause`) if the Effect fails
+- Rejects with the `Cause` itself if it's not a standard failure (e.g., defects, interruptions)
+
+## Usage
+
+### Basic Success Case
+
+```typescript
+import { runPromiseUnwrapped } from 'ff-effect';
+import { Effect } from 'effect';
+
+const result = await runPromiseUnwrapped(
+  Effect.succeed('hello')
+);
+
+console.log(result); // 'hello'
+```
+
+### Error Handling
+
+```typescript
+import { runPromiseUnwrapped } from 'ff-effect';
+import { Effect } from 'effect';
+
+class MyError extends Error {
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+try {
+  await runPromiseUnwrapped(
+    Effect.fail(new MyError('Something went wrong'))
+  );
+} catch (error) {
+  // error is MyError, not Cause<MyError>
+  console.error(error.message); // 'Something went wrong'
+}
+```
+
+### Comparison with runPromiseExit
+
+Here's how `runPromiseUnwrapped` differs from using `runPromiseExit` directly:
+
+<CodeGroup>
+```typescript With runPromiseUnwrapped
+import { runPromiseUnwrapped } from 'ff-effect';
+import { Effect } from 'effect';
+
+try {
+  const result = await runPromiseUnwrapped(
+    Effect.fail(new Error('boom'))
+  );
+} catch (error) {
+  // error is Error directly
+  console.error(error.message); // 'boom'
+}
+```
+
+```typescript With runPromiseExit
+import { Effect, Exit, Cause } from 'effect';
+
+const exit = await Effect.runPromiseExit(
+  Effect.fail(new Error('boom'))
+);
+
+if (Exit.isFailure(exit)) {
+  if (Cause.isFailType(exit.cause)) {
+    // Must manually extract error from Cause
+    const error = exit.cause.error;
+    console.error(error.message); // 'boom'
+  }
+}
+```
+</CodeGroup>
+
+## Implementation Details
+
+The function works by:
+
+1. Running the Effect with `Effect.runPromiseExit`
+2. Matching on the resulting `Exit`:
+   - If success: return the value
+   - If failure: check if it's a standard failure (`Cause.isFailType`)
+     - If yes: throw the unwrapped error
+     - If no: throw the entire Cause (for defects, interruptions, etc.)
+
+```typescript src/run-promise-unwrapped.ts
+import { Cause, Effect, Exit } from 'effect';
+
+export async function runPromiseUnwrapped<A, E>(
+  effect: Effect.Effect<A, E, never>,
+) {
+  const exit = await Effect.runPromiseExit(effect);
+  return Exit.match(exit, {
+    onSuccess: (value) => value,
+    onFailure: (cause) => {
+      throw Cause.isFailType(cause) ? cause.error : cause;
+    },
+  });
+}
+```
+
+## When to Use
+
+<Tip>
+Use `runPromiseUnwrapped` when integrating Effect code with traditional Promise-based code that expects standard error throwing behavior.
+</Tip>
+
+### Good Use Cases
+
+✅ **API Routes / HTTP Handlers**
+```typescript
+app.get('/users/:id', async (req, res) => {
+  try {
+    const user = await runPromiseUnwrapped(
+      fetchUser(req.params.id)
+    );
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+```
+
+✅ **Test Utilities**
+```typescript
+test('should fetch user', async () => {
+  const user = await runPromiseUnwrapped(
+    userService.findById(1)
+  );
+  expect(user.name).toBe('Alice');
+});
+```
+
+✅ **Legacy Code Integration**
+```typescript
+// Existing function expects promises with throw semantics
+async function legacyHandler(getId: () => Promise<number>) {
+  const id = await getId();
+  // ...
+}
+
+// Wrap your Effect
+await legacyHandler(() =>
+  runPromiseUnwrapped(myEffect)
+);
+```
+
+### When NOT to Use
+
+❌ **Within Effect Code**
+
+Inside an Effect context, use normal Effect error handling:
+
+```typescript
+// DON'T do this
+const program = Effect.gen(function* () {
+  try {
+    const result = await runPromiseUnwrapped(someEffect);
+  } catch (error) {
+    // ...
+  }
+});
+
+// DO this instead
+const program = Effect.gen(function* () {
+  const result = yield* someEffect.pipe(
+    Effect.catchAll((error) => /* handle error */)
+  );
+});
+```
+
+❌ **When You Need Structured Error Information**
+
+If you need to distinguish between different failure types (defects, interruptions, failures), use `runPromiseExit` instead.
+
+## Error Types
+
+The function handles different `Cause` types:
+
+### Standard Failures
+
+Throws the unwrapped error:
+
+```typescript
+const effect = Effect.fail(new Error('boom'));
+// Throws: Error('boom')
+```
+
+### Defects
+
+Throws the entire `Cause`:
+
+```typescript
+const effect = Effect.die(new Error('unexpected'));
+// Throws: Cause (containing the defect)
+```
+
+### Interruptions
+
+Throws the `Cause`:
+
+```typescript
+const effect = Effect.interrupt;
+// Throws: Cause (representing interruption)
+```
+
+## See Also
+
+- [Effect.runPromiseExit](https://effect.website/docs/essentials/running-effects#runpromiseexit) - The underlying Effect function
+- [wrapClient](/ff-effect/wrap-client) - Uses similar error unwrapping for client wrappers
+- [oRPC Integration](/ff-effect/orpc) - Uses `runPromiseUnwrapped` as a fallback

@@ -1,0 +1,149 @@
+---
+title: Introduction
+description: Effect.ts utilities for building robust applications with AI SDK, Drizzle, Inngest, and oRPC integrations
+---
+
+## Overview
+
+`ff-effect` is a utilities package that provides Effect.ts-first wrappers for popular libraries:
+
+- **AI SDK** - Effectful wrappers for AI SDK's `generateText`, `streamText`, and `tool` with automatic callback bridging
+- **Drizzle** - Type-safe database operations with built-in transaction support
+- **Inngest** - Background job orchestration with Effect-based function handlers
+- **oRPC** - RPC procedures backed by Effect
+
+All integrations preserve Effect's composability, type-safety, and structured concurrency while making it seamless to use these libraries in an Effect-first codebase.
+
+## Installation
+
+<CodeGroup>
+```bash npm
+npm install ff-effect effect
+```
+
+```bash bun
+bun add ff-effect effect
+```
+
+```bash pnpm
+pnpm add ff-effect effect
+```
+</CodeGroup>
+
+### Peer Dependencies
+
+Depending on which integrations you use, install the corresponding peer dependencies:
+
+```bash
+# For AI SDK integration
+bun add ai
+
+# For Drizzle integration
+bun add drizzle-orm
+
+# For Inngest integration
+bun add inngest
+
+# For oRPC integration
+bun add @orpc/server @orpc/contract
+```
+
+## Core Utilities
+
+The package exports three core utilities:
+
+### extract
+
+Extract services from an Effect function to move dependencies up the stack. This is particularly useful when building service containers that expose methods requiring services.
+
+```typescript
+import { extract } from 'ff-effect';
+import { Effect } from 'effect';
+
+class MyService extends Effect.Service<MyService>()('MyService', {
+  effect: Effect.gen(function* () {
+    return {
+      // Extract moves ServiceA dependency from getVal to Container
+      getVal: yield* extract(function* () {
+        return (yield* ServiceA).value;
+      })
+    };
+  })
+}) {}
+```
+
+### runPromiseUnwrapped
+
+Run an Effect as a Promise, automatically unwrapping errors from `Cause` to throw them directly.
+
+```typescript
+import { runPromiseUnwrapped } from 'ff-effect';
+import { Effect } from 'effect';
+
+const result = await runPromiseUnwrapped(
+  Effect.succeed('hello')
+); // 'hello'
+```
+
+### wrapClient
+
+Wrap any Promise-based client with consistent Effect error handling.
+
+```typescript
+import { wrapClient } from 'ff-effect';
+
+class MyError extends Error {}
+
+const wrap = wrapClient({
+  client: myApiClient,
+  error: ({ cause, message }) => new MyError(message)
+});
+
+const result = yield* wrap(
+  (client) => client.fetchData(),
+  { errorMessage: 'Failed to fetch data' }
+);
+```
+
+## Integration Modules
+
+Each integration is available under a separate export path:
+
+```typescript
+import { generateText, tool } from 'ff-effect/for/ai';
+import { createDrizzle } from 'ff-effect/for/drizzle';
+import { createInngest } from 'ff-effect/for/inngest';
+import { createHandler } from 'ff-effect/for/orpc';
+```
+
+Explore the individual integration pages to learn more:
+
+- [AI SDK Integration](/ff-effect/ai-sdk) - Effect wrappers for AI SDK functions
+- [Drizzle Integration](/ff-effect/drizzle) - Database operations with transactions
+- [Inngest Integration](/ff-effect/inngest) - Background jobs with Effect
+- [oRPC Integration](/ff-effect/orpc) - RPC procedures with Effect handlers
+
+## Type Safety
+
+All utilities preserve full type inference and provide compile-time safety:
+
+- Service dependencies are tracked in the `R` type parameter
+- Errors are represented in the `E` type parameter
+- Success values flow through the `A` type parameter
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="extract" icon="arrow-up" href="/ff-effect/extract">
+    Learn how to extract service dependencies
+  </Card>
+  <Card title="AI SDK" icon="sparkles" href="/ff-effect/ai-sdk">
+    Use AI SDK with Effect callbacks
+  </Card>
+  <Card title="Drizzle" icon="database" href="/ff-effect/drizzle">
+    Type-safe database operations
+  </Card>
+  <Card title="Inngest" icon="clock" href="/ff-effect/inngest">
+    Background job orchestration
+  </Card>
+</CardGroup>

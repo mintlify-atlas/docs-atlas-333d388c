@@ -1,0 +1,282 @@
+---
+title: Cache with ioredis
+description: Use ioredis as a cache adapter for persistent caching
+---
+
+The `ioredis` adapter wraps an [ioredis](https://github.com/redis/ioredis) client to provide persistent caching with Redis.
+
+## Installation
+
+```bash
+bun add ioredis
+```
+
+## Basic Usage
+
+```typescript
+import { Cache, CacheAdapter } from 'ff-serv/cache'
+import { ioredis } from 'ff-serv/cache/ioredis'
+import { Effect, Duration } from 'effect'
+import Redis from 'ioredis'
+
+const program = Effect.gen(function* () {
+  const redis = new Redis()
+  const client = ioredis(redis)
+
+  const cache = yield* Cache.make({
+    ttl: Duration.minutes(5),
+    lookup: (key: string) => Effect.succeed(`value-${key}`),
+    adapter: CacheAdapter.redis({
+      client,
+      keyPrefix: 'myapp',
+    }),
+  })
+
+  const value = yield* cache.get('test')
+  yield* Effect.log(value)
+})
+
+Effect.runPromise(program)
+```
+
+## Configuration
+
+### Redis Connection
+
+```typescript
+import Redis from 'ioredis'
+
+// Local Redis
+const redis = new Redis()
+
+// Remote Redis
+const redis = new Redis({
+  host: 'redis.example.com',
+  port: 6379,
+  password: 'secret',
+})
+
+// Redis Cluster
+const redis = new Redis.Cluster([
+  { host: 'redis-1', port: 6379 },
+  { host: 'redis-2', port: 6379 },
+])
+```
+
+### Adapter Options
+
+```typescript
+CacheAdapter.redis({
+  client: ioredis(redis),
+  keyPrefix: 'myapp', // Keys stored as "myapp:{JSON.stringify(key)}"
+  schema?: Schema.Schema<Value, string>, // Optional: serialize/deserialize values
+})
+```
+
+## With Schema Serialization
+
+Use Effect's `Schema` for type-safe serialization:
+
+```typescript
+import { Schema } from 'effect'
+
+const User = Schema.Struct({
+  id: Schema.Number,
+  name: Schema.String,
+  email: Schema.String,
+})
+
+const cache = yield* Cache.make({
+  ttl: Duration.minutes(5),
+  lookup: (userId: number) => fetchUser(userId),
+  adapter: CacheAdapter.redis({
+    client: ioredis(redis),
+    keyPrefix: 'users',
+    schema: User, // Automatically encodes/decodes User objects
+  }),
+})
+```
+
+## Key Storage Format
+
+Keys are stored in Redis as:
+
+```
+{keyPrefix}:{JSON.stringify(key)}
+```
+
+Examples:
+
+```typescript
+// String key
+cache.get('user-1') // Redis key: "myapp:"user-1""
+
+// Number key
+cache.get(123) // Redis key: "myapp:123"
+
+// Object key
+cache.get({ userId: 1, role: 'admin' })
+// Redis key: "myapp:{\"userId\":1,\"role\":\"admin\"}"
+```
+
+## TTL Handling
+
+Redis TTL is set to `ttl + swr` to ensure stale data is available during the SWR window:
+
+```typescript
+const cache = yield* Cache.make({
+  ttl: Duration.minutes(5),
+  swr: Duration.minutes(10),
+  lookup: (key: string) => fetchData(key),
+  adapter: CacheAdapter.redis({
+    client: ioredis(redis),
+    keyPrefix: 'app',
+  }),
+})
+
+// Redis key expires after 15 minutes (5 + 10)
+```
+
+## Invalidation
+
+Invalidating a key removes it from both memory and Redis:
+
+```typescript
+yield* cache.invalidate(123) // Deletes "myapp:123" from Redis
+yield* cache.invalidateAll // Note: Redis keys are NOT cleared (only memory)
+```
+
+<Warning>
+  `invalidateAll` only clears the in-memory cache. Redis keys persist until their TTL expires. If you need to clear Redis, use `redis.flushdb()` or delete keys manually.
+</Warning>
+
+## Tiered Caching
+
+Combine memory (L1) and Redis (L2) for faster reads:
+
+```typescript
+import { CacheAdapter } from 'ff-serv/cache'
+import { ioredis } from 'ff-serv/cache/ioredis'
+import Redis from 'ioredis'
+
+const redis = new Redis()
+const client = ioredis(redis)
+
+const l1 = CacheAdapter.memory({ capacity: 100 })
+const l2 = CacheAdapter.redis({ client, keyPrefix: 'app' })
+
+const cache = yield* Cache.make({
+  ttl: Duration.minutes(5),
+  lookup: (key: string) => fetchData(key),
+  adapter: CacheAdapter.tiered(l1, l2),
+})
+```
+
+**Behavior:**
+1. Check L1 (memory) - fastest
+2. If miss, check L2 (Redis)
+3. On write, update both L1 and L2
+
+## Complete Example
+
+```typescript
+import { Cache, CacheAdapter } from 'ff-serv/cache'
+import { ioredis } from 'ff-serv/cache/ioredis'
+import { Effect, Duration, Schema } from 'effect'
+import Redis from 'ioredis'
+
+// Define a schema
+const Product = Schema.Struct({
+  id: Schema.Number,
+  name: Schema.String,
+  price: Schema.Number,
+})
+
+type Product = Schema.Schema.Type<typeof Product>
+
+const program = Effect.gen(function* () {
+  const redis = new Redis()
+  const client = ioredis(redis)
+
+  const productCache = yield* Cache.make({
+    ttl: Duration.minutes(10),
+    swr: Duration.minutes(5),
+    lookup: (productId: number) =>
+      Effect.gen(function* () {
+        yield* Effect.log(`Fetching product ${productId} from API`)
+        // Simulate API call
+        return {
+          id: productId,
+          name: `Product ${productId}`,
+          price: Math.random() * 100,
+        } satisfies Product
+      }),
+    adapter: CacheAdapter.redis({
+      client,
+      keyPrefix: 'products',
+      schema: Product,
+    }),
+  })
+
+  // First call: cache miss (fetches from API)
+  const product1 = yield* productCache.get(1)
+  yield* Effect.log('First call:', product1)
+
+  // Second call: cache hit (from Redis)
+  const product2 = yield* productCache.get(1)
+  yield* Effect.log('Second call:', product2)
+
+  // Update product
+  yield* productCache.invalidate(1)
+  yield* Effect.log('Cache invalidated')
+
+  // Third call: cache miss again
+  const product3 = yield* productCache.get(1)
+  yield* Effect.log('Third call:', product3)
+
+  yield* Effect.promise(() => redis.quit())
+})
+
+Effect.runPromise(program)
+```
+
+## Type Signature
+
+```typescript
+function ioredis(client: IORedisClient): RedisClient
+
+type IORedisClient = {
+  get(key: string): Promise<string | null>
+  set(key: string, value: string, px: 'PX', ttlMs: number): Promise<unknown>
+  del(key: string): Promise<number>
+}
+
+type RedisClient = {
+  readonly get: (key: string) => Effect.Effect<Option.Option<string>>
+  readonly set: (key: string, value: string, ttlMs: number) => Effect.Effect<void>
+  readonly del: (key: string) => Effect.Effect<void>
+}
+```
+
+## Error Handling
+
+Redis errors are converted to Effect failures:
+
+```typescript
+const cache = yield* Cache.make({
+  ttl: Duration.minutes(5),
+  lookup: (key: string) => Effect.succeed(key),
+  adapter: CacheAdapter.redis({ client, keyPrefix: 'app' }),
+})
+
+// If Redis is down, errors are propagated
+const result = yield* cache.get('test').pipe(Effect.either)
+
+if (result._tag === 'Left') {
+  yield* Effect.log('Cache error:', result.left)
+}
+```
+
+<Note>
+  The `ioredis` adapter converts all Redis operations to Effect and uses `Effect.orDie` - errors will crash the fiber unless caught with `Effect.catchAll` or `Effect.either`.
+</Note>

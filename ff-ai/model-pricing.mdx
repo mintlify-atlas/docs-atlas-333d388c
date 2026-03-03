@@ -1,0 +1,493 @@
+---
+title: 'Model Pricing'
+description: 'Calculate usage costs for AI models from models.dev'
+icon: 'dollar-sign'
+---
+
+## Overview
+
+The `getModelUsageCost` function calculates the cost in USD for AI model usage based on token consumption. It fetches pricing data from [models.dev](https://models.dev), an open-source pricing database maintained by SST.
+
+## Usage
+
+```typescript
+import { getModelUsageCost } from 'ff-ai';
+import { Effect } from 'effect';
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+const program = Effect.gen(function* () {
+  const result = yield* Effect.tryPromise(() =>
+    generateText({
+      model: openai('gpt-4'),
+      messages: [{ role: 'user', content: 'Hello!' }]
+    })
+  );
+
+  const cost = yield* getModelUsageCost({
+    model: result.model,
+    usage: result.usage
+  });
+
+  if (cost) {
+    console.log(`Input cost: $${cost.input}`);
+    console.log(`Output cost: $${cost.output}`);
+    console.log(`Total cost: $${cost.total}`);
+  } else {
+    console.log('Pricing data not available for this model');
+  }
+
+  return cost;
+});
+```
+
+## API Reference
+
+### getModelUsageCost
+
+Calculate the cost of model usage based on token consumption.
+
+```typescript
+function getModelUsageCost(params: {
+  model: LanguageModel | string;
+  usage: LanguageModelUsage;
+}): Effect<UsageCost | null, never, HttpClient>
+```
+
+<ParamField path="params" type="object" required>
+  Parameters for cost calculation
+
+  <Expandable title="properties">
+    <ParamField path="model" type="LanguageModel | string" required>
+      The language model used. Can be a `LanguageModel` instance from the AI SDK or a string model ID.
+    </ParamField>
+
+    <ParamField path="usage" type="LanguageModelUsage" required>
+      Token usage from the AI SDK response
+
+      <Expandable title="properties">
+        <ParamField path="inputTokens" type="number">
+          Number of input tokens consumed
+        </ParamField>
+
+        <ParamField path="outputTokens" type="number">
+          Number of output tokens generated
+        </ParamField>
+
+        <ParamField path="cachedInputTokens" type="number">
+          Number of cached input tokens (for models with prompt caching)
+        </ParamField>
+      </Expandable>
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="return" type="Effect<UsageCost | null, never, HttpClient>">
+  An Effect that resolves to:
+  - `UsageCost` object if pricing data is available
+  - `null` if the model is not found in the models.dev database
+
+  Requires `HttpClient` from `@effect/platform` in the context.
+</ResponseField>
+
+### UsageCost
+
+The cost breakdown object:
+
+```typescript
+export type UsageCost = {
+  input: Usd;   // Cost for input tokens
+  output: Usd;  // Cost for output tokens
+  total: Usd;   // Total cost (input + output)
+};
+```
+
+<ResponseField name="input" type="number">
+  Cost in USD for input tokens. Includes cache read costs if applicable.
+</ResponseField>
+
+<ResponseField name="output" type="number">
+  Cost in USD for output tokens.
+</ResponseField>
+
+<ResponseField name="total" type="number">
+  Total cost in USD (input + output).
+</ResponseField>
+
+## Complete Example
+
+```typescript
+import { getModelUsageCost } from 'ff-ai';
+import { Effect, Layer } from 'effect';
+import { HttpClient } from '@effect/platform';
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+const calculateCost = Effect.gen(function* () {
+  // Generate text
+  const result = yield* Effect.tryPromise(() =>
+    generateText({
+      model: openai('gpt-4'),
+      messages: [
+        { role: 'user', content: 'Explain quantum computing in simple terms' }
+      ]
+    })
+  );
+
+  console.log('Response:', result.text);
+  console.log('\nUsage:');
+  console.log(`- Input tokens: ${result.usage.inputTokens}`);
+  console.log(`- Output tokens: ${result.usage.outputTokens}`);
+
+  // Calculate cost
+  const cost = yield* getModelUsageCost({
+    model: result.model,
+    usage: result.usage
+  });
+
+  if (cost) {
+    console.log('\nCost:');
+    console.log(`- Input: $${cost.input.toFixed(6)}`);
+    console.log(`- Output: $${cost.output.toFixed(6)}`);
+    console.log(`- Total: $${cost.total.toFixed(6)}`);
+  } else {
+    console.log('\nPricing data not available');
+  }
+
+  return { result, cost };
+});
+
+// Run with HttpClient
+calculateCost.pipe(
+  Effect.provide(HttpClient.layer),
+  Effect.runPromise
+);
+```
+
+## Supported Models
+
+The function supports models from providers in the [models.dev database](https://github.com/sst/models.dev):
+
+- OpenAI (GPT-4, GPT-3.5, etc.)
+- Anthropic (Claude 3, Claude 2, etc.)
+- Google (Gemini, PaLM 2)
+- Mistral AI
+- Cohere
+- And many more
+
+If a model is not found, the function returns `null`.
+
+## Provider Normalization
+
+The function automatically normalizes provider names:
+
+```typescript
+// Google Generative AI
+const model = google('gemini-pro');
+// Provider 'google.generative-ai' normalized to 'google'
+
+const cost = yield* getModelUsageCost({
+  model,
+  usage: { inputTokens: 100, outputTokens: 50 }
+});
+```
+
+Supported normalizations:
+
+- `provider.chat` → `provider`
+- `google.generative-ai` → `google`
+
+## Prompt Caching
+
+For models that support prompt caching (like Claude with prompt caching), the function calculates cache costs:
+
+```typescript
+const cost = yield* getModelUsageCost({
+  model: anthropic('claude-3-5-sonnet-20241022'),
+  usage: {
+    inputTokens: 1000,
+    outputTokens: 200,
+    cachedInputTokens: 800  // 800 tokens from cache
+  }
+});
+
+// Cost calculation:
+// - 200 fresh input tokens × input price
+// - 800 cached tokens × cache read price (much cheaper)
+// - 200 output tokens × output price
+```
+
+Cache read pricing is typically 90% cheaper than fresh input tokens.
+
+## Caching
+
+Pricing data is cached in memory to avoid repeated HTTP requests:
+
+```typescript
+// First call: fetches from models.dev
+const cost1 = yield* getModelUsageCost({
+  model: openai('gpt-4'),
+  usage: { inputTokens: 100, outputTokens: 50 }
+});
+
+// Second call: uses cached pricing data
+const cost2 = yield* getModelUsageCost({
+  model: openai('gpt-4'),  // Same model
+  usage: { inputTokens: 200, outputTokens: 100 }
+});
+```
+
+The cache persists for the lifetime of the Node process.
+
+## Error Handling
+
+The function handles errors gracefully:
+
+```typescript
+const program = Effect.gen(function* () {
+  const cost = yield* getModelUsageCost({
+    model: 'unknown-model',
+    usage: { inputTokens: 100, outputTokens: 50 }
+  }).pipe(
+    Effect.catchAll((error) => {
+      console.error('Failed to get pricing:', error);
+      return Effect.succeed(null);
+    })
+  );
+
+  if (cost === null) {
+    console.log('Using unknown model or pricing unavailable');
+  }
+
+  return cost;
+});
+```
+
+Common scenarios:
+
+- **Model not in database**: Returns `null`
+- **Network error**: Effect fails with error
+- **Invalid TOML**: Effect fails with `TomlParseError`
+
+## Budget Tracking Example
+
+Track costs across multiple requests:
+
+```typescript
+import { getModelUsageCost } from 'ff-ai';
+import { Effect, Ref } from 'effect';
+
+const trackCosts = Effect.gen(function* () {
+  const totalCost = yield* Ref.make(0);
+
+  // Make multiple requests
+  for (let i = 0; i < 5; i++) {
+    const result = yield* Effect.tryPromise(() =>
+      generateText({
+        model: openai('gpt-4'),
+        messages: [{ role: 'user', content: `Request ${i + 1}` }]
+      })
+    );
+
+    const cost = yield* getModelUsageCost({
+      model: result.model,
+      usage: result.usage
+    });
+
+    if (cost) {
+      yield* Ref.update(totalCost, (prev) => prev + cost.total);
+      console.log(`Request ${i + 1} cost: $${cost.total.toFixed(6)}`);
+    }
+  }
+
+  const total = yield* Ref.get(totalCost);
+  console.log(`\nTotal cost: $${total.toFixed(4)}`);
+
+  return total;
+});
+```
+
+## Cost Alerts
+
+Implement cost monitoring:
+
+```typescript
+const generateWithCostLimit = (maxCost: number) =>
+  Effect.gen(function* () {
+    const result = yield* Effect.tryPromise(() =>
+      generateText({
+        model: openai('gpt-4'),
+        messages: [{ role: 'user', content: 'Long request...' }]
+      })
+    );
+
+    const cost = yield* getModelUsageCost({
+      model: result.model,
+      usage: result.usage
+    });
+
+    if (cost && cost.total > maxCost) {
+      yield* Effect.fail(
+        new Error(`Cost $${cost.total} exceeds limit $${maxCost}`)
+      );
+    }
+
+    return { result, cost };
+  });
+
+// Use with $0.10 limit
+const program = generateWithCostLimit(0.10).pipe(
+  Effect.catchAll((error) => {
+    console.error('Cost limit exceeded:', error.message);
+    return Effect.succeed(null);
+  })
+);
+```
+
+## Model Comparison
+
+Compare costs across models:
+
+```typescript
+const compareCosts = Effect.gen(function* () {
+  const models = [
+    openai('gpt-4'),
+    openai('gpt-3.5-turbo'),
+    anthropic('claude-3-5-sonnet-20241022')
+  ];
+
+  const prompt = 'Explain machine learning';
+  const costs = [];
+
+  for (const model of models) {
+    const result = yield* Effect.tryPromise(() =>
+      generateText({
+        model,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    );
+
+    const cost = yield* getModelUsageCost({
+      model: result.model,
+      usage: result.usage
+    });
+
+    costs.push({
+      model: result.model.modelId,
+      cost: cost?.total || 0,
+      tokens: result.usage.totalTokens
+    });
+  }
+
+  // Sort by cost
+  costs.sort((a, b) => a.cost - b.cost);
+
+  console.log('Cost comparison:');
+  for (const { model, cost, tokens } of costs) {
+    console.log(`${model}: $${cost.toFixed(6)} (${tokens} tokens)`);
+  }
+
+  return costs;
+});
+```
+
+## Custom Pricing Sources
+
+If you need to use custom pricing instead of models.dev:
+
+```typescript
+const customCalculateCost = (
+  usage: LanguageModelUsage,
+  inputPricePerMillion: number,
+  outputPricePerMillion: number
+) => {
+  const inputCost = (usage.inputTokens || 0) * inputPricePerMillion / 1_000_000;
+  const outputCost = (usage.outputTokens || 0) * outputPricePerMillion / 1_000_000;
+
+  return {
+    input: inputCost,
+    output: outputCost,
+    total: inputCost + outputCost
+  };
+};
+
+// Use custom pricing
+const cost = customCalculateCost(
+  result.usage,
+  10.00,  // $10 per million input tokens
+  30.00   // $30 per million output tokens
+);
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Check for null">
+    Always handle the case where pricing is unavailable:
+
+    ```typescript
+    const cost = yield* getModelUsageCost({ model, usage });
+    if (cost === null) {
+      console.log('Pricing unavailable, using default estimate');
+      // Use fallback logic
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Batch cost calculations">
+    Calculate costs in batches to benefit from caching:
+
+    ```typescript
+    const results = yield* Effect.all(requests);
+    const costs = yield* Effect.all(
+      results.map(r => getModelUsageCost({ model: r.model, usage: r.usage }))
+    );
+    ```
+  </Accordion>
+
+  <Accordion title="Monitor costs in production">
+    Log costs for monitoring and budgeting:
+
+    ```typescript
+    if (cost) {
+      yield* Effect.logInfo(`Request cost: $${cost.total.toFixed(6)}`);
+      // Send to monitoring service
+      yield* trackMetric('ai.cost', cost.total);
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Use streaming for long responses">
+    For long generations, streaming can help manage costs by allowing early termination:
+
+    ```typescript
+    const stream = yield* Effect.tryPromise(() =>
+      streamText({
+        model: openai('gpt-4'),
+        messages: [{ role: 'user', content: 'Long story...' }],
+        onFinish: async (result) => {
+          const cost = await getModelUsageCost({
+            model: result.model,
+            usage: result.usage
+          }).pipe(Effect.runPromise);
+          console.log('Final cost:', cost?.total);
+        }
+      })
+    );
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Turn Handler" icon="arrows-rotate" href="/ff-ai/turn-handler">
+    Calculate costs for conversation turns
+  </Card>
+  <Card title="Examples" icon="code" href="/ff-ai/examples">
+    See cost tracking examples
+  </Card>
+  <Card title="models.dev" icon="arrow-up-right-from-square" href="https://models.dev">
+    Browse the pricing database
+  </Card>
+</CardGroup>

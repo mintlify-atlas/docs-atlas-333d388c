@@ -1,0 +1,492 @@
+---
+title: oRPC Integration
+description: Create RPC procedures with Effect-based handlers
+---
+
+## Overview
+
+The oRPC integration provides Effect-first handlers for [oRPC](https://orpc.unnoq.com/) procedures. Build type-safe RPC APIs where handlers can access Effect services and use structured concurrency.
+
+## Installation
+
+```bash
+bun add ff-effect effect @orpc/server @orpc/contract
+```
+
+## Exports
+
+```typescript
+import { createHandler, FfOrpcCtx } from 'ff-effect/for/orpc';
+```
+
+## createHandler
+
+Create an oRPC procedure with an Effect-based handler.
+
+### Signature
+
+```typescript
+function createHandler<
+  OPT extends { context: Record<string, unknown> },
+  OUTPUT,
+  IMPLEMENTED_HANDLER,
+  R
+>(
+  builder: SimpleBuilder<OPT, OUTPUT, IMPLEMENTED_HANDLER>,
+  handler: (opt: OPT) => Effect.Effect<OUTPUT, unknown, R>
+): Effect.Effect<IMPLEMENTED_HANDLER, never, R>
+```
+
+### Parameters
+
+<ParamField path="builder" type="SimpleBuilder" required>
+  An oRPC procedure builder (created with `os.input()`, `os.output()`, etc.). The builder must have a `.handler()` method.
+</ParamField>
+
+<ParamField path="handler" type="(opt: OPT) => Effect.Effect<OUTPUT, unknown, R>" required>
+  Effect-based handler function. Receives the procedure's input and context, returns an Effect.
+  
+  The `opt` parameter contains:
+  - `input` - The validated input data
+  - `context` - Request context (user, session, etc.)
+  - Other oRPC metadata
+</ParamField>
+
+### Returns
+
+Returns an `Effect` that yields the fully implemented oRPC procedure. The Effect requires any services (`R`) that the handler depends on.
+
+## Basic Usage
+
+### Simple Procedure
+
+```typescript
+import { createHandler } from 'ff-effect/for/orpc';
+import { os } from '@orpc/server';
+import { Effect } from 'effect';
+import * as v from 'valibot';
+
+const program = Effect.gen(function* () {
+  const greet = yield* createHandler(
+    os.input(v.object({ name: v.string() })),
+    Effect.fn(function* ({ input }) {
+      return `Hello, ${input.name}!`;
+    })
+  );
+  
+  // greet is now a standard oRPC procedure
+  return greet;
+});
+```
+
+### With Output Schema
+
+```typescript
+import { createHandler } from 'ff-effect/for/orpc';
+import { os } from '@orpc/server';
+import { Effect } from 'effect';
+import * as v from 'valibot';
+
+const program = Effect.gen(function* () {
+  const getUser = yield* createHandler(
+    os
+      .input(v.object({ id: v.string() }))
+      .output(v.object({
+        id: v.string(),
+        name: v.string(),
+        email: v.string()
+      })),
+    Effect.fn(function* ({ input }) {
+      return {
+        id: input.id,
+        name: 'Alice',
+        email: 'alice@example.com'
+      };
+    })
+  );
+  
+  return getUser;
+});
+```
+
+## Using Services
+
+Access Effect services within handlers:
+
+```typescript
+import { createHandler } from 'ff-effect/for/orpc';
+import { os } from '@orpc/server';
+import { Effect } from 'effect';
+import * as v from 'valibot';
+
+class Database extends Effect.Service<Database>()('Database', {
+  effect: Effect.succeed({
+    getUser: (id: string) => Effect.succeed({
+      id,
+      name: 'Alice',
+      email: 'alice@example.com'
+    })
+  })
+}) {}
+
+class Logger extends Effect.Service<Logger>()('Logger', {
+  effect: Effect.succeed({
+    info: (msg: string) => Effect.sync(() => console.log(msg))
+  })
+}) {}
+
+const program = Effect.gen(function* () {
+  const getUser = yield* createHandler(
+    os.input(v.object({ id: v.string() })),
+    Effect.fn(function* ({ input }) {
+      const db = yield* Database;
+      const logger = yield* Logger;
+      
+      yield* logger.info(`Fetching user ${input.id}`);
+      const user = yield* db.getUser(input.id);
+      yield* logger.info(`Found user ${user.name}`);
+      
+      return user;
+    })
+  );
+  
+  return getUser;
+}).pipe(
+  Effect.provide(Database.Default),
+  Effect.provide(Logger.Default)
+);
+```
+
+## Working with Contracts
+
+Use oRPC contracts for shared client/server types:
+
+```typescript
+import { createHandler } from 'ff-effect/for/orpc';
+import { os, implement } from '@orpc/server';
+import { Effect } from 'effect';
+import * as v from 'valibot';
+
+// Define contract (shared between client and server)
+const contract = {
+  getUser: os
+    .input(v.object({ id: v.string() }))
+    .output(v.object({
+      id: v.string(),
+      name: v.string(),
+      email: v.string()
+    })),
+  
+  listUsers: os
+    .input(v.object({ limit: v.optional(v.number()) }))
+    .output(v.array(v.object({
+      id: v.string(),
+      name: v.string()
+    })))
+};
+
+// Implement contract
+const osContract = implement(contract);
+
+class Database extends Effect.Service<Database>()('Database', {
+  effect: Effect.succeed({
+    getUser: (id: string) => Effect.succeed({ id, name: 'Alice', email: 'alice@example.com' }),
+    listUsers: (limit: number) => Effect.succeed([{ id: '1', name: 'Alice' }])
+  })
+}) {}
+
+const program = Effect.gen(function* () {
+  const getUser = yield* createHandler(
+    osContract.getUser,
+    Effect.fn(function* ({ input }) {
+      const db = yield* Database;
+      return yield* db.getUser(input.id);
+    })
+  );
+  
+  const listUsers = yield* createHandler(
+    osContract.listUsers,
+    Effect.fn(function* ({ input }) {
+      const db = yield* Database;
+      return yield* db.listUsers(input.limit ?? 10);
+    })
+  );
+  
+  return { getUser, listUsers };
+}).pipe(Effect.provide(Database.Default));
+```
+
+## Context
+
+Access request context (user, session, etc.):
+
+```typescript
+import { createHandler } from 'ff-effect/for/orpc';
+import { os } from '@orpc/server';
+import { Effect, Data } from 'effect';
+import * as v from 'valibot';
+
+class UnauthorizedError extends Data.TaggedError('UnauthorizedError')<{}> {}
+
+const program = Effect.gen(function* () {
+  const createPost = yield* createHandler(
+    os
+      .$context<{ user?: { id: string; name: string } }>()
+      .input(v.object({ title: v.string(), content: v.string() })),
+    Effect.fn(function* ({ input, context }) {
+      // Require authenticated user
+      if (!context.user) {
+        return yield* Effect.fail(new UnauthorizedError());
+      }
+      
+      // Create post with user info
+      return {
+        id: '1',
+        title: input.title,
+        content: input.content,
+        authorId: context.user.id,
+        authorName: context.user.name
+      };
+    })
+  );
+  
+  return createPost;
+});
+```
+
+## FfOrpcCtx
+
+Use `FfOrpcCtx` to provide custom Effect runtime when calling procedures:
+
+### Creating FfOrpcCtx
+
+```typescript
+import { FfOrpcCtx } from 'ff-effect/for/orpc';
+import { Effect } from 'effect';
+
+class MyService extends Effect.Service<MyService>()('MyService', {
+  effect: Effect.succeed({ value: 'data' })
+}) {}
+
+const runtime = Effect.gen(function* () {
+  const service = yield* MyService;
+  
+  return FfOrpcCtx.create({
+    runEffect: <A, E>(effect: Effect.Effect<A, E, MyService>) =>
+      Effect.runPromise(
+        effect.pipe(Effect.provideService(MyService, service))
+      )
+  });
+}).pipe(Effect.provide(MyService.Default));
+
+const ctx = await Effect.runPromise(runtime);
+```
+
+### Using FfOrpcCtx
+
+```typescript
+import { call } from '@orpc/server';
+import { FfOrpcCtx } from 'ff-effect/for/orpc';
+
+class MyService extends Effect.Service<MyService>()('MyService', {
+  effect: Effect.succeed({ value: 'custom' })
+}) {}
+
+const program = Effect.gen(function* () {
+  const service = yield* MyService;
+  
+  const procedure = yield* createHandler(
+    os
+      .$context<{ ff: FfOrpcCtx<MyService> }>()
+      .input(v.object({ name: v.string() })),
+    Effect.fn(function* ({ input }) {
+      const svc = yield* MyService;
+      return `${input.name}: ${svc.value}`;
+    })
+  );
+  
+  // Call with custom context
+  const result = yield* Effect.promise(() =>
+    call(
+      procedure,
+      { name: 'test' },
+      {
+        context: {
+          ff: FfOrpcCtx.create({
+            runEffect: (effect) =>
+              Effect.runPromise(
+                effect.pipe(Effect.provideService(MyService, service))
+              )
+          })
+        }
+      }
+    )
+  );
+  
+  return result; // 'test: custom'
+}).pipe(Effect.provide(MyService.Default));
+```
+
+<Note>
+If no `FfOrpcCtx` is provided, handlers fall back to using `runPromiseUnwrapped` with the current runtime.
+</Note>
+
+## Error Handling
+
+### Effect Errors
+
+Effect errors are automatically converted to thrown errors in the RPC response:
+
+```typescript
+import { createHandler } from 'ff-effect/for/orpc';
+import { os } from '@orpc/server';
+import { Effect, Data } from 'effect';
+import * as v from 'valibot';
+
+class NotFoundError extends Data.TaggedError('NotFoundError')<{
+  id: string;
+}> {}
+
+const program = Effect.gen(function* () {
+  const getUser = yield* createHandler(
+    os.input(v.object({ id: v.string() })),
+    Effect.fn(function* ({ input }) {
+      if (input.id === '404') {
+        return yield* Effect.fail(new NotFoundError({ id: input.id }));
+      }
+      return { id: input.id, name: 'Alice' };
+    })
+  );
+  
+  return getUser;
+});
+```
+
+### Handling Errors
+
+```typescript
+import { createHandler } from 'ff-effect/for/orpc';
+import { Effect } from 'effect';
+
+const program = Effect.gen(function* () {
+  const getUser = yield* createHandler(
+    os.input(v.object({ id: v.string() })),
+    Effect.fn(function* ({ input }) {
+      const result = yield* fetchUser(input.id).pipe(
+        Effect.catchTags({
+          NotFoundError: (error) =>
+            Effect.succeed({ id: input.id, name: 'Unknown', error: 'not-found' }),
+          DatabaseError: (error) =>
+            Effect.fail(new Error('Database unavailable'))
+        })
+      );
+      
+      return result;
+    })
+  );
+  
+  return getUser;
+});
+```
+
+## Complete Example
+
+```typescript
+import { createHandler } from 'ff-effect/for/orpc';
+import { os, implement } from '@orpc/server';
+import { Effect, Data } from 'effect';
+import * as v from 'valibot';
+
+// Services
+class Database extends Effect.Service<Database>()('Database', {
+  effect: Effect.succeed({
+    getUser: (id: string) => Effect.succeed({ id, name: 'Alice', email: 'alice@example.com' }),
+    createUser: (data: { name: string; email: string }) =>
+      Effect.succeed({ id: '1', ...data }),
+    listUsers: () => Effect.succeed([{ id: '1', name: 'Alice', email: 'alice@example.com' }])
+  })
+}) {}
+
+class Logger extends Effect.Service<Logger>()('Logger', {
+  effect: Effect.succeed({
+    info: (msg: string) => Effect.sync(() => console.log(`[INFO] ${msg}`))
+  })
+}) {}
+
+// Errors
+class UnauthorizedError extends Data.TaggedError('UnauthorizedError')<{}> {}
+class NotFoundError extends Data.TaggedError('NotFoundError')<{ id: string }> {}
+
+// Contract
+const contract = {
+  getUser: os
+    .input(v.object({ id: v.string() }))
+    .output(v.object({ id: v.string(), name: v.string(), email: v.string() })),
+  
+  createUser: os
+    .input(v.object({ name: v.string(), email: v.string() }))
+    .output(v.object({ id: v.string(), name: v.string(), email: v.string() })),
+  
+  listUsers: os
+    .input(v.object({}))
+    .output(v.array(v.object({ id: v.string(), name: v.string(), email: v.string() })))
+};
+
+const osContract = implement(contract);
+
+// Implementation
+const program = Effect.gen(function* () {
+  const getUser = yield* createHandler(
+    osContract.getUser,
+    Effect.fn(function* ({ input }) {
+      const db = yield* Database;
+      const logger = yield* Logger;
+      
+      yield* logger.info(`Getting user ${input.id}`);
+      
+      const user = yield* db.getUser(input.id).pipe(
+        Effect.catchAll(() => Effect.fail(new NotFoundError({ id: input.id })))
+      );
+      
+      return user;
+    })
+  );
+  
+  const createUser = yield* createHandler(
+    osContract.createUser,
+    Effect.fn(function* ({ input, context }) {
+      const db = yield* Database;
+      const logger = yield* Logger;
+      
+      yield* logger.info(`Creating user ${input.name}`);
+      return yield* db.createUser(input);
+    })
+  );
+  
+  const listUsers = yield* createHandler(
+    osContract.listUsers,
+    Effect.fn(function* () {
+      const db = yield* Database;
+      return yield* db.listUsers();
+    })
+  );
+  
+  return { getUser, createUser, listUsers };
+}).pipe(
+  Effect.provide(Database.Default),
+  Effect.provide(Logger.Default)
+);
+
+const procedures = await Effect.runPromise(program);
+
+// Use with oRPC server
+import { serve } from '@orpc/server';
+
+const app = serve(procedures);
+```
+
+## See Also
+
+- [oRPC Documentation](https://orpc.unnoq.com/)
+- [extract](/ff-effect/extract) - Used internally for handler context
+- [runPromiseUnwrapped](/ff-effect/run-promise-unwrapped) - Default execution strategy

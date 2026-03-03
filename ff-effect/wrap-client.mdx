@@ -1,0 +1,348 @@
+---
+title: wrapClient
+description: Wrap Promise-based API clients with Effect-based error handling
+---
+
+## Overview
+
+`wrapClient` creates a reusable wrapper around any Promise-based client (like API clients, database clients, etc.) that converts operations into Effects with consistent error handling.
+
+## Signature
+
+```typescript
+function wrapClient<CLIENT, ERROR extends Error>(opts: {
+  client: CLIENT;
+  error: (ctx: { cause: Cause; message?: Message }) => ERROR;
+}): <OUTPUT, OVERRIDEN_ERROR>(
+  func: (client: CLIENT) => Promise<OUTPUT>,
+  overrides?: {
+    errorHandler?: (cause: Cause) => OVERRIDEN_ERROR;
+    errorMessage?: ((cause: Cause) => Message) | Message;
+  }
+) => Effect.Effect<OUTPUT, ERROR | OVERRIDEN_ERROR>
+```
+
+### Parameters
+
+<ParamField path="opts.client" type="CLIENT" required>
+  The client instance to wrap. Can be any object with Promise-returning methods.
+</ParamField>
+
+<ParamField path="opts.error" type="(ctx: { cause: unknown; message?: string }) => ERROR" required>
+  Factory function that creates your custom error type from a cause and optional message.
+</ParamField>
+
+### Returns
+
+Returns a wrapper function that accepts:
+
+<ParamField path="func" type="(client: CLIENT) => Promise<OUTPUT>" required>
+  A function that uses the client to perform an operation.
+</ParamField>
+
+<ParamField path="overrides.errorHandler" type="(cause: unknown) => OVERRIDEN_ERROR">
+  Optional custom error handler for this specific operation. Overrides the default error factory.
+</ParamField>
+
+<ParamField path="overrides.errorMessage" type="string | (cause: unknown) => string">
+  Optional error message (static string or function). Passed to the error factory.
+</ParamField>
+
+The wrapper returns an `Effect.Effect<OUTPUT, ERROR | OVERRIDEN_ERROR>`.
+
+## Basic Usage
+
+### Simple Client Wrapper
+
+```typescript
+import { wrapClient } from 'ff-effect';
+import { Effect } from 'effect';
+
+class ApiError extends Error {
+  constructor(
+    public cause: unknown,
+    message?: string
+  ) {
+    super(message ?? 'API request failed');
+  }
+}
+
+const apiClient = {
+  fetchUser: (id: number) => fetch(`/api/users/${id}`).then(r => r.json()),
+  createUser: (data: UserData) => fetch('/api/users', {
+    method: 'POST',
+    body: JSON.stringify(data)
+  }).then(r => r.json())
+};
+
+// Create the wrapper once
+const wrap = wrapClient({
+  client: apiClient,
+  error: ({ cause, message }) => new ApiError(cause, message)
+});
+
+// Use it for multiple operations
+const program = Effect.gen(function* () {
+  // Fetch with custom error message
+  const user = yield* wrap(
+    (client) => client.fetchUser(1),
+    { errorMessage: 'Failed to fetch user' }
+  );
+  
+  // Create without custom message
+  const newUser = yield* wrap(
+    (client) => client.createUser({ name: 'Alice' })
+  );
+  
+  return { user, newUser };
+});
+```
+
+## Error Handling Options
+
+### Default Error
+
+Without overrides, uses the error factory provided to `wrapClient`:
+
+```typescript
+const wrap = wrapClient({
+  client: myClient,
+  error: ({ cause, message }) => new MyError(cause, message)
+});
+
+const effect = wrap((client) => client.fetchData());
+// On failure: throws MyError with no custom message
+```
+
+### Static Error Message
+
+Provide a static string message:
+
+```typescript
+const effect = wrap(
+  (client) => client.fetchData(),
+  { errorMessage: 'Failed to fetch data' }
+);
+// On failure: throws MyError with message 'Failed to fetch data'
+```
+
+### Dynamic Error Message
+
+Compute the error message from the cause:
+
+```typescript
+const effect = wrap(
+  (client) => client.fetchData(),
+  {
+    errorMessage: (cause) => {
+      if (cause instanceof Error) {
+        return `API Error: ${cause.message}`;
+      }
+      return 'Unknown error occurred';
+    }
+  }
+);
+```
+
+### Custom Error Handler
+
+Completely override the error handling for specific operations:
+
+```typescript
+import { Data } from 'effect';
+
+class ValidationError extends Data.TaggedError('ValidationError')<{
+  cause: unknown;
+}> {}
+
+const effect = wrap(
+  (client) => client.validateUser(data),
+  {
+    errorHandler: (cause) => new ValidationError({ cause })
+  }
+);
+// On failure: throws ValidationError instead of the default error type
+```
+
+## Real-World Examples
+
+### HTTP Client Wrapper
+
+```typescript
+import { wrapClient } from 'ff-effect';
+import { Data, Effect } from 'effect';
+
+class HttpError extends Data.TaggedError('HttpError')<{
+  status?: number;
+  cause: unknown;
+  message: string;
+}> {}
+
+interface HttpClient {
+  get: (url: string) => Promise<Response>;
+  post: (url: string, body: unknown) => Promise<Response>;
+  put: (url: string, body: unknown) => Promise<Response>;
+  delete: (url: string) => Promise<Response>;
+}
+
+const createHttpWrapper = (client: HttpClient) => {
+  return wrapClient({
+    client,
+    error: ({ cause, message }) => {
+      const status = cause instanceof Response ? cause.status : undefined;
+      return new HttpError({
+        status,
+        cause,
+        message: message ?? 'HTTP request failed'
+      });
+    }
+  });
+};
+
+// Usage
+const http = createHttpWrapper(myHttpClient);
+
+const program = Effect.gen(function* () {
+  const users = yield* http(
+    (client) => client.get('/api/users').then(r => r.json()),
+    { errorMessage: 'Failed to fetch users' }
+  );
+  
+  const created = yield* http(
+    (client) => client.post('/api/users', { name: 'Alice' }).then(r => r.json()),
+    { errorMessage: (cause) => `User creation failed: ${cause}` }
+  );
+  
+  return { users, created };
+});
+```
+
+### Database Client Wrapper
+
+```typescript
+import { wrapClient } from 'ff-effect';
+import { Data, Effect } from 'effect';
+
+class DbError extends Data.TaggedError('DbError')<{
+  query?: string;
+  cause: unknown;
+  message: string;
+}> {}
+
+interface DbClient {
+  query: (sql: string, params?: unknown[]) => Promise<unknown[]>;
+  execute: (sql: string, params?: unknown[]) => Promise<{ affectedRows: number }>;
+}
+
+const createDbWrapper = (client: DbClient) => {
+  return wrapClient({
+    client,
+    error: ({ cause, message }) => new DbError({
+      cause,
+      message: message ?? 'Database operation failed'
+    })
+  });
+};
+
+const db = createDbWrapper(myDbClient);
+
+const program = Effect.gen(function* () {
+  const users = yield* db(
+    (client) => client.query('SELECT * FROM users WHERE id = ?', [1]),
+    { errorMessage: 'Failed to query users' }
+  );
+  
+  return users;
+});
+```
+
+### Third-Party API Client
+
+```typescript
+import { wrapClient } from 'ff-effect';
+import { Effect } from 'effect';
+import { OpenAI } from 'openai';
+
+class OpenAIError extends Error {
+  constructor(
+    public cause: unknown,
+    message?: string
+  ) {
+    super(message ?? 'OpenAI API error');
+  }
+}
+
+const createOpenAIWrapper = (client: OpenAI) => {
+  return wrapClient({
+    client,
+    error: ({ cause, message }) => new OpenAIError(cause, message)
+  });
+};
+
+const openai = createOpenAIWrapper(new OpenAI({ apiKey: process.env.OPENAI_API_KEY }));
+
+const program = Effect.gen(function* () {
+  const completion = yield* openai(
+    (client) => client.chat.completions.create({
+      model: 'gpt-4',
+      messages: [{ role: 'user', content: 'Hello!' }]
+    }),
+    { errorMessage: 'Failed to generate completion' }
+  );
+  
+  return completion.choices[0].message.content;
+});
+```
+
+## Type Safety
+
+### Generic Client Types
+
+The wrapper preserves full type information:
+
+```typescript
+interface MyClient {
+  getString: () => Promise<string>;
+  getNumber: () => Promise<number>;
+  getUser: () => Promise<{ id: number; name: string }>;
+}
+
+const wrap = wrapClient<MyClient, MyError>({
+  client: myClient,
+  error: ({ cause, message }) => new MyError(cause, message)
+});
+
+// Return types are fully inferred
+const stringEffect: Effect.Effect<string, MyError> = wrap(
+  (client) => client.getString()
+);
+
+const userEffect: Effect.Effect<{ id: number; name: string }, MyError> = wrap(
+  (client) => client.getUser()
+);
+```
+
+### Error Type Overrides
+
+When using `errorHandler`, the error type is updated:
+
+```typescript
+class CustomError extends Error {}
+
+const wrap = wrapClient<Client, DefaultError>({
+  client,
+  error: ({ cause }) => new DefaultError(cause)
+});
+
+// Type: Effect.Effect<string, CustomError>
+const effect = wrap(
+  (client) => client.getData(),
+  { errorHandler: (cause) => new CustomError('custom') }
+);
+```
+
+## See Also
+
+- [runPromiseUnwrapped](/ff-effect/run-promise-unwrapped) - Simple Effect to Promise conversion
+- [Drizzle Integration](/ff-effect/drizzle) - Uses similar wrapping patterns for database operations
+- [AI SDK Integration](/ff-effect/ai-sdk) - Uses `wrapClient` pattern for AI SDK operations

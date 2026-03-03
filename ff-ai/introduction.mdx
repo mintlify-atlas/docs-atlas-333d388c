@@ -1,0 +1,164 @@
+---
+title: 'Introduction'
+description: 'AI conversation management SDK with Effect.ts integration'
+icon: 'robot'
+---
+
+## Overview
+
+`ff-ai` is an AI conversation management SDK built on top of the [Vercel AI SDK](https://sdk.vercel.ai) with first-class [Effect.ts](https://effect.website) integration. It provides type-safe, functional patterns for managing AI conversations, messages, and model usage costs.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Conversation Store" icon="database" href="/ff-ai/conversation-store">
+    Abstract interface for persisting and retrieving conversation messages
+  </Card>
+  <Card title="Turn Handler" icon="arrows-rotate" href="/ff-ai/turn-handler">
+    Manage multi-turn conversations with automatic message persistence
+  </Card>
+  <Card title="Model Pricing" icon="dollar-sign" href="/ff-ai/model-pricing">
+    Calculate usage costs for AI models from models.dev
+  </Card>
+  <Card title="Drizzle Provider" icon="database" href="/ff-ai/drizzle-provider">
+    PostgreSQL-backed conversation storage using Drizzle ORM
+  </Card>
+</CardGroup>
+
+## Installation
+
+```bash
+bun add ff-ai
+```
+
+### Peer Dependencies
+
+The SDK requires the following peer dependencies:
+
+```bash
+bun add effect @effect/platform ai @ai-sdk/provider valibot @ai-sdk/valibot
+```
+
+For the Drizzle provider:
+
+```bash
+bun add drizzle-orm postgres
+```
+
+## Quick Start
+
+Here's a simple example of using ff-ai with the Drizzle provider:
+
+```typescript
+import { ConversationStore, createTurnHandler } from 'ff-ai';
+import { createDrizzleStoreLayer } from 'ff-ai/providers/drizzle';
+import { Effect } from 'effect';
+import { generateText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+import postgres from 'postgres';
+
+// Set up database connection
+const sql = postgres(process.env.DATABASE_URL!);
+const storeLayer = createDrizzleStoreLayer(sql);
+
+// Use the turn handler
+const program = Effect.gen(function* () {
+  const handler = yield* createTurnHandler({
+    identifier: {
+      resourceId: 'user-123',
+      threadId: 'conversation-456'
+    }
+  });
+
+  // Get conversation history
+  const history = yield* handler.getHistory({ windowSize: 10 });
+
+  // Save user message
+  yield* handler.saveUserMessage({
+    role: 'user',
+    content: 'Hello!'
+  });
+
+  // Generate response and save automatically
+  const result = yield* Effect.tryPromise(() =>
+    generateText({
+      model: openai('gpt-4'),
+      messages: [
+        ...history,
+        { role: 'user', content: 'Hello!' }
+      ],
+      onStepFinish: async (step) => {
+        await handler.onStep(step).pipe(Effect.runPromise);
+      }
+    })
+  );
+
+  return result;
+});
+
+// Run the program
+await program.pipe(
+  Effect.provide(storeLayer),
+  Effect.runPromise
+);
+```
+
+## Core Concepts
+
+### Effect.ts Integration
+
+All operations in ff-ai are Effect-based, providing:
+
+- **Type-safe error handling**: Errors are part of the type signature
+- **Composability**: Chain operations using Effect operators
+- **Dependency injection**: Use Effect's Context for services
+- **Resource management**: Automatic cleanup with structured concurrency
+
+### Thread Identifiers
+
+Conversations are identified by a combination of:
+
+- `resourceId`: The resource or user the conversation belongs to
+- `threadId`: A unique identifier for the conversation thread
+
+This two-level structure allows you to organize conversations by user, project, or any other resource.
+
+### Message Format
+
+Messages extend the AI SDK's `ModelMessage` type with:
+
+- `id`: UUID v7 identifier
+- `createdAt`: Timestamp for ordering and retrieval
+
+## Architecture
+
+```
+┌─────────────────────────────────────────┐
+│         Your Application                │
+├─────────────────────────────────────────┤
+│         createTurnHandler               │
+├─────────────────────────────────────────┤
+│       ConversationStore (Interface)     │
+├─────────────────────────────────────────┤
+│     Provider (Drizzle, Custom, etc.)    │
+├─────────────────────────────────────────┤
+│         Database / Storage              │
+└─────────────────────────────────────────┘
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Conversation Store" icon="database" href="/ff-ai/conversation-store">
+    Learn about the ConversationStore interface
+  </Card>
+  <Card title="Messages" icon="message" href="/ff-ai/messages">
+    Understand message types and utilities
+  </Card>
+  <Card title="Turn Handler" icon="arrows-rotate" href="/ff-ai/turn-handler">
+    Build multi-turn conversations
+  </Card>
+  <Card title="Examples" icon="code" href="/ff-ai/examples">
+    See complete examples
+  </Card>
+</CardGroup>
