@@ -13,26 +13,14 @@ The `ConversationStore` is the core abstraction in ff-ai for managing conversati
 The `ConversationStore` is defined as an Effect Context.Tag with two methods:
 
 ```typescript
-import { Context, Effect } from 'effect';
-import type { StoreError } from './common/store';
-import type { ConversationMessage } from './conversation/core/message';
-import type { ThreadIdentifier } from './conversation/core/thread';
+import { ConversationStore } from 'ff-ai';
+import type { ConversationMessage } from 'ff-ai';
 
-export class ConversationStore extends Context.Tag(
-  'ff-ai/conversation/ConversationStore'
-)<
-  ConversationStore,
-  {
-    getMessages: (
-      params: ThreadIdentifier & { windowSize?: number },
-    ) => Effect.Effect<Array<ConversationMessage.Type>, StoreError>;
-    saveMessages: (
-      params: ThreadIdentifier & {
-        messages: Array<ConversationMessage.Type>;
-      },
-    ) => Effect.Effect<void, StoreError>;
-  }
->() {}
+// The ConversationStore is an Effect Context.Tag with two methods:
+// - getMessages: retrieves messages from a thread
+// - saveMessages: persists messages to a thread
+// 
+// Both methods require a ThreadIdentifier with resourceId and threadId
 ```
 
 ## Methods
@@ -208,15 +196,20 @@ You can implement a custom storage provider by creating a Layer that provides th
 
 ```typescript
 import { ConversationStore } from 'ff-ai';
-import { Effect, Layer } from 'effect';
-import { StoreError } from 'ff-ai/common/store';
+import { Data, Effect, Layer } from 'effect';
+
+// Define StoreError inline (not exported from ff-ai)
+class StoreError extends Data.TaggedError('StoreError')<{
+  message: string;
+  cause?: unknown;
+}> {}
 
 export const MyCustomStoreLayer = Layer.succeed(
   ConversationStore,
   {
     getMessages: Effect.fn(function* (params) {
       // Your implementation here
-      // Must return Effect<ConversationMessage.Type[], StoreError>
+      // Must return Effect<ConversationMessage[], StoreError>
 
       try {
         const messages = yield* Effect.tryPromise({

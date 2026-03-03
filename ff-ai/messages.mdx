@@ -50,32 +50,25 @@ A `ConversationMessage` includes:
 
 ## Creating Messages
 
-### fromModelMessage
+Messages are typically created automatically when using `createTurnHandler`. The turn handler's `saveUserMessage` and `onStep` methods handle message creation internally.
 
-Convert an AI SDK `ModelMessage` to a `ConversationMessage` by adding `id` and `createdAt`:
+If you need to manually create a message (e.g., for custom storage implementations), construct it with the required fields:
 
 ```typescript
-import { ConversationMessage } from 'ff-ai';
+import type { ConversationMessage } from 'ff-ai';
+import { v7 as createUuid } from 'uuid';
 
-const message = ConversationMessage.fromModelMessage({
+const message: ConversationMessage = {
+  id: createUuid() as any, // UUID v7
+  createdAt: new Date(),
   role: 'user',
   content: 'Hello, world!'
-});
-
-// Result:
-// {
-//   id: '01940b3e-...',  // UUID v7
-//   createdAt: Date,
-//   role: 'user',
-//   content: 'Hello, world!'
-// }
+};
 ```
 
-**Signature:**
-
-```typescript
-function fromModelMessage(message: Ai.ModelMessage): ConversationMessage.Type
-```
+<Note>
+  Most users should rely on `createTurnHandler` to manage message creation automatically rather than creating messages manually.
+</Note>
 
 ## Converting Messages
 

@@ -349,12 +349,14 @@ Implement a custom in-memory store:
 
 ```typescript
 import { ConversationStore, ConversationMessage } from 'ff-ai';
-import { Effect, Layer } from 'effect';
-import { StoreError } from 'ff-ai/common/store';
-import type { ThreadIdentifier } from 'ff-ai/conversation/core/thread';
+import { Data, Effect, Layer } from 'effect';
+
+// Define types inline (these are not exported from ff-ai)
+type ThreadIdentifier = { resourceId: string; threadId: string };
+class StoreError extends Data.TaggedError('StoreError')<{ message: string; cause?: unknown }> {}
 
 class InMemoryStore {
-  private messages = new Map<string, ConversationMessage.Type[]>();
+  private messages = new Map<string, ConversationMessage[]>();
 
   private getKey(id: ThreadIdentifier): string {
     return `${id.resourceId}:${id.threadId}`;
@@ -362,7 +364,7 @@ class InMemoryStore {
 
   getMessages(
     params: ThreadIdentifier & { windowSize?: number }
-  ): Effect.Effect<ConversationMessage.Type[], StoreError> {
+  ): Effect.Effect<ConversationMessage[], StoreError> {
     return Effect.try({
       try: () => {
         const key = this.getKey(params);
@@ -389,7 +391,7 @@ class InMemoryStore {
   }
 
   saveMessages(
-    params: ThreadIdentifier & { messages: ConversationMessage.Type[] }
+    params: ThreadIdentifier & { messages: ConversationMessage[] }
   ): Effect.Effect<void, StoreError> {
     return Effect.try({
       try: () => {
