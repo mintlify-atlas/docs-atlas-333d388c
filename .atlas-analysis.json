@@ -1,0 +1,171 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "FF",
+  "projectDescription": "Effect.ts utilities and integrations for AI, databases, serverless functions, and HTTP services",
+  "theme": "palm",
+  "primaryColor": "#7c3aed",
+  "lightColor": "#a78bfa",
+  "darkColor": "#5b21b6",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Overview",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "ff-effect",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "ff-effect/introduction"
+            ]
+          },
+          {
+            "group": "Core Utilities",
+            "pages": [
+              "ff-effect/extract",
+              "ff-effect/run-promise-unwrapped",
+              "ff-effect/wrap-client"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "ff-effect/ai-sdk",
+              "ff-effect/drizzle",
+              "ff-effect/inngest",
+              "ff-effect/orpc"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "ff-effect/examples"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "ff-ai",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "ff-ai/introduction"
+            ]
+          },
+          {
+            "group": "Conversation Management",
+            "pages": [
+              "ff-ai/conversation-store",
+              "ff-ai/messages",
+              "ff-ai/turn-handler"
+            ]
+          },
+          {
+            "group": "Providers",
+            "pages": [
+              "ff-ai/drizzle-provider"
+            ]
+          },
+          {
+            "group": "Pricing",
+            "pages": [
+              "ff-ai/model-pricing"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "ff-ai/examples"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "ff-serv",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "ff-serv/introduction"
+            ]
+          },
+          {
+            "group": "HTTP",
+            "pages": [
+              "ff-serv/basic-server",
+              "ff-serv/fetch-handler",
+              "ff-serv/orpc-integration"
+            ]
+          },
+          {
+            "group": "Caching",
+            "pages": [
+              "ff-serv/cache",
+              "ff-serv/cache-ioredis",
+              "ff-serv/cache-bun-redis"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "ff-serv/logger",
+              "ff-serv/port"
+            ]
+          },
+          {
+            "group": "CLI",
+            "pages": [
+              "ff-serv/cli"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "ff-serv/examples"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Effect.ts integration for AI SDK with typed callbacks",
+    "Drizzle ORM wrapper with compile-time transaction safety",
+    "Inngest serverless functions with Effect.ts patterns",
+    "oRPC procedure handlers with Effect.ts error handling",
+    "AI conversation management with message persistence",
+    "HTTP server utilities with structured logging",
+    "Caching abstractions for Redis and Bun Redis"
+  ],
+  "publicApiSurface": [
+    "extract",
+    "runPromiseUnwrapped",
+    "wrapClient",
+    "generateText",
+    "streamText",
+    "tool",
+    "createDrizzle",
+    "createInngest",
+    "createHandler",
+    "ConversationStore",
+    "createTurnHandler",
+    "getModelUsageCost",
+    "Logger",
+    "getPort",
+    "createBasicServer",
+    "createFetchHandler",
+    "createOrpcHandler"
+  ]
+}
